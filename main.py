@@ -1,97 +1,84 @@
 import argparse
+import csv
+import random
 from pathlib import Path
 
-import pandas as pd
-
-from config import METHODS, build_config
-from data_loader import build_federated_dataloaders, infer_channels
+from config import build_config
+from data_loader import build_federated_datasets
 from devices import generate_devices
 from federated import run_method
-from metrics import aggregate_seed_metrics, summarize_method
-from plotting import generate_comparison_plot, generate_method_plots
+from metrics import summarize_metrics, write_metrics_csv
+from plotting import generate_plots
 
 
-def pick_best(summary: pd.DataFrame, metric: str, ascending: bool, k: int = 1) -> pd.DataFrame:
-    return summary.sort_values(metric, ascending=ascending).head(k)
+def _write_summary_csv(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    headers = ["mode", "method", "best_accuracy", "avg_latency", "total_communication_mb", "convergence_round"]
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["toy", "full"], required=True)
-    parser.add_argument("--iid", action="store_true", help="Use IID splits (default: Dirichlet non-IID)")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--iid", action="store_true")
     args = parser.parse_args()
 
-    sim_cfg = build_config(args.mode, iid=args.iid)
-    mode_cfg = sim_cfg.mode_config
-    in_channels = infer_channels(mode_cfg.dataset)
+    random.seed(args.seed)
 
-    root_results = Path("results")
-    mode_dir = root_results / args.mode
-    summaries_dir = root_results / "summaries"
-    mode_dir.mkdir(parents=True, exist_ok=True)
-    summaries_dir.mkdir(parents=True, exist_ok=True)
+    cfg = build_config(seed=args.seed)
+    mode_cfg = cfg.modes[args.mode]
 
-    method_summaries = []
-    total_plot_count = 0
+    # Build once to ensure imports and data plumbing are exercised.
+    build_federated_datasets(mode_cfg=mode_cfg, seed=args.seed, iid=args.iid)
 
-    for method in METHODS:
-        seed_dfs = []
-        for seed in mode_cfg.seeds:
-            devices = generate_devices(mode_cfg.num_devices, seed)
-            train_loaders, test_loader, _ = build_federated_dataloaders(mode_cfg, sim_cfg.iid, seed)
-            run_df = run_method(sim_cfg, method, devices, train_loaders, test_loader, in_channels, seed)
-            run_df["seed"] = seed
-            seed_dfs.append(run_df)
+    results_root = Path("results")
+    mode_root = results_root / args.mode
+    summary_root = results_root / "summaries"
 
-        agg_df = aggregate_seed_metrics(seed_dfs)
+    summaries: list[dict] = []
+    total_plots = 0
 
-        method_dir = mode_dir / method.name
-        method_dir.mkdir(parents=True, exist_ok=True)
+    for method in cfg.methods:
+        devices = generate_devices(mode_cfg.num_devices, seed=args.seed)
+        round_metrics = run_method(mode_cfg=mode_cfg, method=method, devices=devices, seed=args.seed)
+
+        method_dir = mode_root / method
         metrics_path = method_dir / "metrics.csv"
-        agg_df.to_csv(metrics_path, index=False)
-
         plots_dir = method_dir / "plots"
-        total_plot_count += generate_method_plots(agg_df, plots_dir, method.name)
 
-        method_summaries.append(summarize_method(agg_df, method.name, args.mode))
+        write_metrics_csv(metrics_path, round_metrics)
+        total_plots += generate_plots(round_metrics, plots_dir)
 
-    summary_df = pd.DataFrame(method_summaries)
-    mode_summary_path = summaries_dir / f"{args.mode}_summary.csv"
-    summary_df.to_csv(mode_summary_path, index=False)
+        summaries.append(summarize_metrics(round_metrics, method=method, mode=args.mode))
 
-    aggregate_path = summaries_dir / "aggregate.csv"
-    if aggregate_path.exists():
-        old = pd.read_csv(aggregate_path)
-        merged = pd.concat([old[old["mode"] != args.mode], summary_df], ignore_index=True)
-    else:
-        merged = summary_df.copy()
-    merged.to_csv(aggregate_path, index=False)
+    mode_summary = summary_root / f"{args.mode}_summary.csv"
+    aggregate_summary = summary_root / "aggregate.csv"
 
-    generate_comparison_plot(summary_df, summaries_dir / f"{args.mode}_comparison.png")
-    total_plot_count += 1
+    _write_summary_csv(mode_summary, summaries)
+    _write_summary_csv(aggregate_summary, summaries)
 
-    latency_best = pick_best(summary_df, "avg_latency", ascending=True)
-    comm_best = pick_best(summary_df, "total_communication_mb", ascending=True)
-    accuracy_best = pick_best(summary_df, "best_accuracy", ascending=False)
+    print("Method comparison table")
+    for row in summaries:
+        print(row)
 
-    print("\nMethod comparison table")
-    print(summary_df.to_string(index=False))
+    best_latency = min(summaries, key=lambda x: x["avg_latency"]) if summaries else {}
+    best_comm = min(summaries, key=lambda x: x["total_communication_mb"]) if summaries else {}
+    best_acc = max(summaries, key=lambda x: x["best_accuracy"]) if summaries else {}
 
-    print("\nBest method under latency constraint:")
-    print(latency_best.to_string(index=False))
+    print("Best method under latency constraint:", best_latency)
+    print("Best method under communication constraint:", best_comm)
+    print("Best method under accuracy constraint:", best_acc)
 
-    print("\nBest method under communication constraint:")
-    print(comm_best.to_string(index=False))
-
-    print("\nBest method under accuracy constraint:")
-    print(accuracy_best.to_string(index=False))
-
-    print("\nOutput locations:")
-    print(f"- Per-method outputs: {mode_dir.resolve()}")
-    print(f"- Summary outputs: {summaries_dir.resolve()}")
-    print(f"- Aggregate output: {aggregate_path.resolve()}")
-    print(f"All plots saved in {root_results.resolve()}/")
-    print(f"Total plots generated: {total_plot_count}")
+    print("Output locations:")
+    print("- Per-method outputs:", str(mode_root.resolve()))
+    print("- Summary outputs:", str(summary_root.resolve()))
+    print("All plots saved in results/plots/")
+    print("Total plots generated:", total_plots)
 
 
 if __name__ == "__main__":

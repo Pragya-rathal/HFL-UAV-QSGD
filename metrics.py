@@ -1,38 +1,46 @@
+import csv
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from statistics import mean
 from typing import Dict, List
 
-import pandas as pd
+
+@dataclass
+class RoundMetric:
+    round_idx: int
+    accuracy: float
+    loss: float
+    latency: float
+    communication_mb: float
+    active_devices: int
 
 
-
-def aggregate_seed_metrics(seed_metrics: List[pd.DataFrame]) -> pd.DataFrame:
-    concat = pd.concat(seed_metrics, keys=range(len(seed_metrics)), names=["seed_idx", "row"])
-    grouped = concat.groupby("round")
-    out = grouped.agg(
-        accuracy_mean=("accuracy", "mean"),
-        accuracy_std=("accuracy", "std"),
-        loss_mean=("loss", "mean"),
-        loss_std=("loss", "std"),
-        latency_mean=("latency", "mean"),
-        latency_std=("latency", "std"),
-        comm_mean=("comm_mb", "mean"),
-        comm_std=("comm_mb", "std"),
-        active_devices_mean=("active_devices", "mean"),
-        p75_latency_mean=("latency_p75", "mean"),
-        max_latency_mean=("latency_max", "mean"),
-    ).reset_index()
-    return out
+def write_metrics_csv(path: Path, metrics: List[RoundMetric]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(asdict(metrics[0]).keys()) if metrics else ["round_idx", "accuracy", "loss", "latency", "communication_mb", "active_devices"])
+        writer.writeheader()
+        for m in metrics:
+            writer.writerow(asdict(m))
 
 
-def summarize_method(df: pd.DataFrame, method: str, mode: str) -> Dict[str, float]:
-    best_accuracy = df["accuracy_mean"].max()
-    avg_latency = df["latency_mean"].mean()
-    total_comm = df["comm_mean"].sum()
-    conv_round = int(df.loc[df["accuracy_mean"].idxmax(), "round"])
+def summarize_metrics(metrics: List[RoundMetric], method: str, mode: str) -> Dict[str, float]:
+    if not metrics:
+        return {
+            "mode": mode,
+            "method": method,
+            "best_accuracy": 0.0,
+            "avg_latency": 0.0,
+            "total_communication_mb": 0.0,
+            "convergence_round": 0,
+        }
+
+    best = max(metrics, key=lambda x: x.accuracy)
     return {
         "mode": mode,
         "method": method,
-        "best_accuracy": float(best_accuracy),
-        "avg_latency": float(avg_latency),
-        "total_communication_mb": float(total_comm),
-        "convergence_round": conv_round,
+        "best_accuracy": best.accuracy,
+        "avg_latency": mean(m.latency for m in metrics),
+        "total_communication_mb": sum(m.communication_mb for m in metrics),
+        "convergence_round": best.round_idx,
     }

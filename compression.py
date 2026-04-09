@@ -1,35 +1,33 @@
-from typing import Tuple
-
-import torch
+from typing import List, Tuple
 
 
-
-def topk_with_error_feedback(update: torch.Tensor, residual: torch.Tensor, ratio: float) -> Tuple[torch.Tensor, torch.Tensor, int]:
-    u = update + residual
-    k = max(1, int(ratio * u.numel()))
-    _, idx = torch.topk(torch.abs(u), k)
-    compressed = torch.zeros_like(u)
-    compressed[idx] = u[idx]
-    new_residual = u - compressed
-    bits = k * 32 + k * 32
-    return compressed, new_residual, bits
+def topk_with_error_feedback(update: List[float], residual: float, ratio: float = 0.1) -> Tuple[List[float], float]:
+    combined = [v + residual / max(1, len(update)) for v in update]
+    k = max(1, int(len(combined) * ratio))
+    ranked = sorted(range(len(combined)), key=lambda i: abs(combined[i]), reverse=True)
+    keep = set(ranked[:k])
+    compressed = [combined[i] if i in keep else 0.0 for i in range(len(combined))]
+    new_residual = sum(combined[i] for i in range(len(combined)) if i not in keep)
+    return compressed, new_residual
 
 
-def qsgd_quantize(update: torch.Tensor, levels: int) -> Tuple[torch.Tensor, int]:
-    if torch.all(update == 0):
-        return update.clone(), 32
-    norm = torch.norm(update, p=2)
-    scaled = torch.abs(update) * levels / (norm + 1e-12)
-    lower = torch.floor(scaled)
-    prob = scaled - lower
-    rand = torch.rand_like(prob)
-    q = lower + (rand < prob).float()
-    q = torch.clamp(q, max=levels)
-    quant = torch.sign(update) * norm * q / levels
-    bits_per_val = int(torch.ceil(torch.log2(torch.tensor(levels + 1))).item()) + 1
-    bits = update.numel() * bits_per_val + 32
-    return quant, bits
+def qsgd_quantize(update: List[float], levels: int = 8) -> List[float]:
+    if not update:
+        return []
+    max_abs = max(abs(v) for v in update) or 1.0
+    step = max_abs / levels
+    quantized = []
+    for v in update:
+        q = round(v / step) * step
+        quantized.append(q)
+    return quantized
 
 
-def full_precision_bits(num_params: int) -> int:
-    return num_params * 32
+def estimate_bits(update: List[float], mode: str = "full") -> int:
+    n = len(update)
+    if mode == "topk":
+        non_zero = sum(1 for v in update if v != 0.0)
+        return non_zero * 64
+    if mode == "qsgd":
+        return n * 8
+    return n * 32
