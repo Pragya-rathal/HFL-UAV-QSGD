@@ -1,45 +1,62 @@
-🚁 UAV-Assisted Hierarchical Federated Learning with QSGD
+# 🚁 UAV-Assisted Hierarchical Federated Learning with QSGD
 
-A research-grade simulation framework for Hierarchical Federated Learning (HFL) in UAV-assisted IoT networks. This project integrates gradient compression (Top-K, QSGD) and quorum-based device selection to study communication-efficient distributed learning.
+A research-grade simulation framework for **Hierarchical Federated Learning (HFL)** in UAV-assisted IoT networks. This project integrates **gradient compression (Top-K, QSGD)** and **quorum-based device selection** to study communication-efficient distributed learning.
 
-📌 Overview
+---
 
-This project simulates a multi-tier federated learning system:
+## 📌 Overview
 
-📱 IoT devices perform local training
-🧩 Devices are grouped via clustering
-🚁 UAVs act as intermediate aggregators
-🌍 A global model is updated iteratively
+This project simulates a **multi-tier federated learning system**:
+
+- 📱 IoT devices perform local training  
+- 🧩 Devices are grouped via clustering  
+- 🚁 UAVs act as intermediate aggregators  
+- 🌍 A global model is updated iteratively  
 
 The framework evaluates trade-offs between:
 
-Model accuracy
-Communication overhead
-Training latency
-Device participation fairness
-🧠 Key Features
-Standard Federated Learning (FedAvg)
-Hierarchical (Clustered) Federated Learning
-Top-K Gradient Compression with Error Feedback
-QSGD Quantization
-Quorum-Based Device Selection
-IID and Non-IID (Dirichlet) data partitioning
-Realistic IoT device simulation
-End-to-end experiment pipeline with plots
-📂 Project Structure
+- Model accuracy  
+- Communication overhead  
+- Training latency  
+- Device participation fairness  
+
+---
+
+## 🧠 Key Features
+
+- Standard Federated Learning (FedAvg)  
+- Hierarchical (Clustered) Federated Learning  
+- Top-K Gradient Compression with Error Feedback  
+- QSGD Quantization  
+- Quorum-Based Device Selection  
+- IID and Non-IID (Dirichlet) data partitioning  
+- Realistic IoT device simulation  
+- End-to-end experiment pipeline with plots  
+
+---
+
+## 📂 Project Structure
+
+
 .
-├── main.py              # Entry point
-├── config.py            # Experiment configuration
-├── federated.py         # FL algorithms (Methods A–F)
-├── devices.py           # IoT device simulation
-├── clustering.py        # Device clustering (K-Means)
-├── compression.py       # Top-K and QSGD
-├── data_loader.py       # Dataset loading and partitioning
-├── model.py             # CNN model
-├── metrics.py           # Metrics computation
-├── plotting.py          # Visualization
-└── results/             # Output directory
-⚙️ Installation
+├── main.py # Entry point
+├── config.py # Experiment configuration
+├── federated.py # FL algorithms (Methods A–F)
+├── devices.py # IoT device simulation
+├── clustering.py # Device clustering (K-Means)
+├── compression.py # Top-K and QSGD
+├── data_loader.py # Dataset loading and partitioning
+├── model.py # CNN model
+├── metrics.py # Metrics computation
+├── plotting.py # Visualization
+└── results/ # Output directory
+
+
+---
+
+## ⚙️ Installation
+
+```bash
 git clone https://github.com/Pragya-rathal/uav-project-QSGD.git
 cd uav-project-QSGD
 
@@ -58,9 +75,6 @@ D	Cluster + QSGD
 E	Cluster + Top-K + Quorum Selection
 F	Cluster + QSGD + Quorum Selection
 📊 Outputs
-
-Results are saved in:
-
 results/
 ├── toy/ or full/
 │   ├── *_history.json
@@ -140,3 +154,15 @@ Latency-aware federated learning
   journal={IEEE Transactions (Target)},
   year={2026}
 }
+⚠️ Notes
+GPU is optional but recommended
+Experiments are reproducible via fixed random seeds
+Results may vary with configuration changes
+📜 License
+
+Add your preferred license (e.g., MIT License)
+
+🙌 Acknowledgements
+Federated Learning (McMahan et al.)
+QSGD (Alistarh et al.)
+PyTorch & Torchvision
