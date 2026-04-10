@@ -44,8 +44,8 @@ def main():
         Device(
             device_id=i,
             lr=cfg.lr,
-            bandwidth_mbps=10.0 + i,
-            compute_factor=1.0 + 0.1 * i,
+            bandwidth=10.0 + i,
+            compute_power=1.0 + 0.1 * i,
         )
         for i in range(cfg.num_devices)
     ]
