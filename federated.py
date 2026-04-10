@@ -172,8 +172,8 @@ class FederatedTrainer:
                 num_batches=int(getattr(dev, "last_num_batches", len(loader))),
                 epochs=self.local_epochs,
             )
-            # Latency already accounts for compressed communication.
-            pass
+            if device_latency > 0.0:
+                latency = max(latency, device_latency)
 
             cid = self.device_to_cluster.get(dev.device_id, 0)
             cluster_payloads[cid].append((compressed_update, self.data_size_by_id[dev.device_id]))
