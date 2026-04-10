@@ -27,7 +27,7 @@ class CNNClassifier(nn.Module):
         self.classifier = nn.Sequential(
             nn.Linear(flattened_dim, 128),
             nn.ReLU(),
-            nn.Linear(128, 10),
+            nn.Linear(128, num_classes),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
