@@ -1,67 +1,65 @@
-UAV-Assisted Hierarchical Federated Learning with QSGD
+🚁 UAV-Assisted Hierarchical Federated Learning with QSGD
 
-A research-grade simulation framework for Hierarchical Federated Learning (HFL) in UAV-assisted IoT networks, integrating gradient compression (Top-K, QSGD) and quorum-based device selection for communication-efficient distributed learning.
+A research-grade simulation framework for Hierarchical Federated Learning (HFL) in UAV-assisted IoT networks. This project integrates gradient compression (Top-K, QSGD) and quorum-based device selection to study communication-efficient distributed learning.
 
-📌 What This Project Does
+📌 Overview
 
-This repo simulates a multi-tier federated learning system:
+This project simulates a multi-tier federated learning system:
 
-📱 IoT devices → train locally
-🧩 Devices → grouped via clustering
-🚁 UAVs → act as intermediate aggregators
-🌍 Global server → updates final model
+📱 IoT devices perform local training
+🧩 Devices are grouped via clustering
+🚁 UAVs act as intermediate aggregators
+🌍 A global model is updated iteratively
 
-And then compares multiple strategies to answer one question:
+The framework evaluates trade-offs between:
 
-How do we reduce communication cost without wrecking accuracy?
-
-🧠 Core Ideas (a.k.a. why this isn’t just another FL repo)
-Hierarchical FL (Clustered FL)
-Reduces communication overhead by aggregating locally before global updates
-Top-K Compression + Error Feedback
-Sends only the most important gradients
+Model accuracy
+Communication overhead
+Training latency
+Device participation fairness
+🧠 Key Features
+Standard Federated Learning (FedAvg)
+Hierarchical (Clustered) Federated Learning
+Top-K Gradient Compression with Error Feedback
 QSGD Quantization
-Compresses gradients into fewer bits while preserving convergence
-(based on QSGD paper)
-Quorum Selection
-Selects only a subset of devices per round while ensuring fairness
-Non-IID Data Simulation
-Because real-world data is messy and annoying
+Quorum-Based Device Selection
+IID and Non-IID (Dirichlet) data partitioning
+Realistic IoT device simulation
+End-to-end experiment pipeline with plots
 📂 Project Structure
 .
-├── main.py              # Runs full experiment pipeline
-├── federated.py        # All 6 FL methods (A–F)
-├── devices.py          # IoT device simulation
-├── clustering.py       # KMeans clustering
-├── compression.py      # Top-K + QSGD
-├── data_loader.py      # MNIST / CIFAR + partitioning
-├── model.py            # CNN model
-├── metrics.py          # Metrics + summaries
-├── plotting.py         # Graph generation
-├── config.py           # Experiment configs
-└── results/            # Outputs
-🚀 How to Run
-1. Install dependencies
+├── main.py              # Entry point
+├── config.py            # Experiment configuration
+├── federated.py         # FL algorithms (Methods A–F)
+├── devices.py           # IoT device simulation
+├── clustering.py        # Device clustering (K-Means)
+├── compression.py       # Top-K and QSGD
+├── data_loader.py       # Dataset loading and partitioning
+├── model.py             # CNN model
+├── metrics.py           # Metrics computation
+├── plotting.py          # Visualization
+└── results/             # Output directory
+⚙️ Installation
+git clone https://github.com/Pragya-rathal/uav-project-QSGD.git
+cd uav-project-QSGD
+
 pip install torch torchvision numpy matplotlib scikit-learn
-2. Run experiment
-🧪 Toy Mode (fast, MNIST)
+🚀 Running Experiments
+Toy Mode (MNIST)
 python main.py --mode toy
-🔬 Full Mode (CIFAR-10)
+Full Mode (CIFAR-10)
 python main.py --mode full
 🧪 Methods Implemented
-Code	Method
+Method	Description
 A	Standard Federated Learning (FedAvg)
 B	Clustered Federated Learning
 C	Cluster + Top-K + Error Feedback
 D	Cluster + QSGD
-E	Cluster + Top-K + Quorum
-F	Cluster + QSGD + Quorum
-
-All implemented inside federated.py, because apparently one file needed to carry the entire research paper.
-
+E	Cluster + Top-K + Quorum Selection
+F	Cluster + QSGD + Quorum Selection
 📊 Outputs
 
-After running, you get:
+Results are saved in:
 
 results/
 ├── toy/ or full/
@@ -70,46 +68,54 @@ results/
 │   ├── loss_vs_rounds.png
 │   ├── latency_vs_rounds.png
 │   ├── communication_vs_rounds.png
-│   └── tradeoff plots
-
-Metrics include:
-
-Accuracy (best & final)
+│   ├── tradeoff_acc_comm.png
+│   ├── tradeoff_acc_lat.png
+│   └── active_devices.png
+Metrics
+Best and final accuracy
 Training loss
-Latency per round
+Average and total latency
 Communication cost (MB)
-Active devices
-📡 System Modeling
-🧩 Device Simulation
+Active devices per round
+📡 System Model
+IoT Devices
 
-Each device has:
+Each simulated device includes:
 
 Compute power
 Bandwidth
-Distance (affects latency)
-Dataset size
-🧠 Clustering
+Distance (affects communication latency)
+Local dataset size
+Clustering
 
-Uses K-Means on:
+Devices are grouped using K-Means based on:
 
 Distance
 Bandwidth
-Compute
-Network coefficient
-📦 Compression
-Top-K → sparse updates
-QSGD → quantized updates
+Compute power
+Network clustering coefficient
+Compression Techniques
+
+Top-K + Error Feedback
+
+Selects top-magnitude gradients
+Uses residual accumulation to reduce information loss
+
+QSGD
+
+Stochastic gradient quantization
+Reduces communication cost via low-bit encoding
 📚 Datasets
 MNIST (toy mode)
 CIFAR-10 (full mode)
 
 Supports:
 
-IID split
-Non-IID (Dirichlet distribution)
-📈 Visualizations
+IID distribution
+Non-IID distribution using Dirichlet sampling
+📈 Visualization
 
-Auto-generated plots:
+Automatically generates:
 
 Accuracy vs Rounds
 Loss vs Rounds
@@ -117,18 +123,16 @@ Latency vs Rounds
 Communication vs Rounds
 Accuracy vs Communication trade-off
 Accuracy vs Latency trade-off
-🔬 Why This Matters
+Active devices per round
+🔬 Research Focus
 
-This repo lets you experimentally analyze:
+This project enables analysis of:
 
 Communication vs accuracy trade-offs
-Impact of clustering in FL
-Efficiency of gradient compression
-Fairness vs performance (quorum selection)
-Latency-aware distributed training
-
-Basically, it’s a controlled sandbox for problems people pretend are “solved” in papers.
-
+Impact of hierarchical aggregation
+Efficiency of compression techniques
+Fairness in device participation
+Latency-aware federated learning
 🧾 Citation
 @article{uav_hfl_qsgd_2026,
   title={Hierarchical Federated Learning in UAV-Assisted IoT Networks with Compression},
@@ -136,7 +140,3 @@ Basically, it’s a controlled sandbox for problems people pretend are “solved
   journal={IEEE Transactions (Target)},
   year={2026}
 }
-⚠️ Notes
-Runs on CPU, but GPU helps
-Fully reproducible via seeds
-If results look weird, it’s probably your config, not the math
