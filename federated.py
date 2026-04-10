@@ -6,7 +6,7 @@ All 6 methods share identical data / device / cluster assignments per seed.
 import numpy as np
 from typing import List, Dict, Optional, Tuple
 
-from model import MLP, clone_model, get_flat_params, set_flat_params, count_parameters
+from model import MLP, clone_model, get_flat_params, set_flat_params, count_parameters, _softmax, _xe
 from compression import (
     topk_compress, topk_decompress, topk_message_size_mb,
     qsgd_quantize, qsgd_dequantize, qsgd_message_size_mb,
