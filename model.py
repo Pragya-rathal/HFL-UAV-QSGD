@@ -3,7 +3,7 @@ from torch import nn
 
 
 class CNNClassifier(nn.Module):
-    def __init__(self, dataset: str = "mnist"):
+    def __init__(self, dataset: str = "mnist", num_classes: int = 10):
         super().__init__()
         ds = dataset.lower()
         if ds not in {"mnist", "cifar10", "cifar-10"}:
