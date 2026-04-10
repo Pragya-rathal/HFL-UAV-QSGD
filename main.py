@@ -50,7 +50,7 @@ def main():
         for i in range(cfg.num_devices)
     ]
 
-    global_model = SimpleMLP(cfg.input_dim, cfg.hidden_dim, cfg.num_classes)
+    global_model = SimpleMLP(dataset="mnist" if cfg.mode == "toy" else "cifar10")
 
     trainer = FederatedTrainer(
         global_model=global_model,
