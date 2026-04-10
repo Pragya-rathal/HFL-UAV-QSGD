@@ -43,7 +43,7 @@ class Device:
         self.local_model = copy.deepcopy(model)
         self.local_model.train()
 
-        optimizer = torch.optim.SGD(self.local_model.parameters(), lr=0.01)
+        optimizer = torch.optim.SGD(self.local_model.parameters(), lr=self.lr)
         criterion = nn.CrossEntropyLoss()
 
         self.last_num_batches = len(dataloader)

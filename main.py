@@ -44,13 +44,13 @@ def main():
         Device(
             device_id=i,
             lr=cfg.lr,
-            bandwidth_mbps=10.0 + i,
-            compute_factor=1.0 + 0.1 * i,
+            bandwidth=10.0 + i,
+            compute_power=1.0 + 0.1 * i,
         )
         for i in range(cfg.num_devices)
     ]
 
-    global_model = SimpleMLP(cfg.input_dim, cfg.hidden_dim, cfg.num_classes)
+    global_model = SimpleMLP(dataset="mnist" if cfg.mode == "toy" else "cifar10")
 
     trainer = FederatedTrainer(
         global_model=global_model,
