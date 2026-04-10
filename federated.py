@@ -128,7 +128,7 @@ def run_method(method, global_model_init, train_loaders, test_loader,
             local_flats = []
             for dev_id in member_ids:
                 local_model = clone_model(global_model)
-                flat_before = get_flat_params(local_model).copy()
+                flat_before = global_flat
 
                 local_model, loss = local_train(local_model, train_loaders[dev_id],
                                                 cfg.local_epochs, cfg.lr,
