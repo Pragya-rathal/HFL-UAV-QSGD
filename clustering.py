@@ -1,103 +1,168 @@
-"""
-Clustering module: cluster-head selection + distance-aware cluster formation.
-Deterministic per seed – identical clusters used across all methods.
-"""
+"""Graph-based clustering using clustering coefficient and average path length."""
 
 import numpy as np
 from typing import List, Dict, Tuple
-from devices import IoTDevice, compute_device_scores
+from scipy.sparse.csgraph import dijkstra
+from sklearn.cluster import KMeans
+from devices import Device
 
 
-def select_cluster_heads(
-    devices: List[IoTDevice],
-    num_clusters: int,
-    w_compute: float,
-    w_clustering: float,
-    w_bandwidth: float,
-) -> List[int]:
-    """Return indices of the top-scoring cluster-head candidates."""
-    compute_device_scores(devices, w_compute, w_clustering, w_bandwidth)
-    sorted_ids = sorted(range(len(devices)), key=lambda i: devices[i].score, reverse=True)
-    head_ids = sorted_ids[:num_clusters]
-    for dev in devices:
-        dev.is_cluster_head = False
-    for idx in head_ids:
-        devices[idx].is_cluster_head = True
-    return head_ids
-
-
-def form_clusters(
-    devices: List[IoTDevice],
-    head_ids: List[int],
-    max_cluster_size: int,
-) -> Dict[int, List[int]]:
-    """
-    Assign each non-head device to the nearest cluster head (by Euclidean
-    distance in a synthetic 2-D layout seeded from device distances).
-    Returns {head_id: [member_device_ids]}.
-    """
-    # Build a synthetic 2-D position for each device using its distance as
-    # the radial coordinate (angle spread uniformly around origin to maintain
-    # determinism without an extra seed).
+def build_adjacency_matrix(devices: List[Device], d0: float = 50.0) -> np.ndarray:
+    """Build weighted adjacency matrix based on distance."""
     n = len(devices)
-    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
-    positions = np.stack(
-        [np.array([d.distance * np.cos(angles[i]),
-                   d.distance * np.sin(angles[i])]) for i, d in enumerate(devices)]
-    )  # shape (n, 2)
-
-    head_positions = positions[head_ids]   # (K, 2)
-
-    clusters: Dict[int, List[int]] = {h: [h] for h in head_ids}
-    cluster_counts = {h: 1 for h in head_ids}
-
-    non_heads = [i for i in range(n) if i not in head_ids]
-    # Sort non-heads by their best distance to any head (closest first → fairer)
-    dists_to_best = [
-        np.min(np.linalg.norm(head_positions - positions[i], axis=1))
-        for i in non_heads
-    ]
-    order = np.argsort(dists_to_best)
-
-    for idx in order:
-        dev_id = non_heads[idx]
-        dists = np.linalg.norm(head_positions - positions[dev_id], axis=1)
-        # Try heads in ascending distance order, respect max_cluster_size
-        for head_rank in np.argsort(dists):
-            h = head_ids[head_rank]
-            if cluster_counts[h] < max_cluster_size:
-                clusters[h].append(dev_id)
-                cluster_counts[h] += 1
-                break
-        else:
-            # If all clusters full, assign to nearest regardless
-            h = head_ids[int(np.argmin(dists))]
-            clusters[h].append(dev_id)
-            cluster_counts[h] += 1
-
-    # Write cluster_id back to device objects
-    for h, members in clusters.items():
-        for dev_id in members:
-            devices[dev_id].cluster_id = h
-
-    return clusters
+    distances = np.array([d.properties.distance for d in devices])
+    
+    adj = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i + 1, n):
+            weight = np.exp(-np.abs(distances[i] - distances[j]) / d0)
+            adj[i, j] = weight
+            adj[j, i] = weight
+    
+    return adj
 
 
-def build_clustering(
-    devices: List[IoTDevice],
+def compute_clustering_coefficients(adj: np.ndarray, threshold: float = 0.1) -> np.ndarray:
+    """Compute local clustering coefficient for each node."""
+    n = adj.shape[0]
+    binary_adj = (adj > threshold).astype(float)
+    cc = np.zeros(n)
+    
+    for i in range(n):
+        neighbors = np.where(binary_adj[i] > 0)[0]
+        k = len(neighbors)
+        
+        if k < 2:
+            cc[i] = 0.0
+            continue
+        
+        triangles = 0
+        for ni in range(len(neighbors)):
+            for nj in range(ni + 1, len(neighbors)):
+                if binary_adj[neighbors[ni], neighbors[nj]] > 0:
+                    triangles += 1
+        
+        possible_triangles = k * (k - 1) / 2
+        cc[i] = triangles / possible_triangles if possible_triangles > 0 else 0.0
+    
+    return cc
+
+
+def compute_average_path_lengths(adj: np.ndarray) -> np.ndarray:
+    """Compute average shortest path length for each node using Dijkstra."""
+    n = adj.shape[0]
+    
+    distance_matrix = np.where(adj > 0, 1.0 / adj, np.inf)
+    np.fill_diagonal(distance_matrix, 0)
+    
+    shortest_paths = dijkstra(distance_matrix, directed=False)
+    
+    apl = np.zeros(n)
+    for i in range(n):
+        valid_paths = shortest_paths[i, :]
+        valid_paths = valid_paths[valid_paths < np.inf]
+        valid_paths = valid_paths[valid_paths > 0]
+        apl[i] = np.mean(valid_paths) if len(valid_paths) > 0 else 0.0
+    
+    return apl
+
+
+def normalize(arr: np.ndarray) -> np.ndarray:
+    """Min-max normalization."""
+    min_val, max_val = arr.min(), arr.max()
+    if max_val - min_val < 1e-10:
+        return np.zeros_like(arr)
+    return (arr - min_val) / (max_val - min_val)
+
+
+def cluster_devices(
+    devices: List[Device],
     num_clusters: int,
-    cfg,
-) -> Tuple[List[int], Dict[int, List[int]]]:
+    d0: float = 50.0,
+    cc_weight: float = 0.5,
+    compute_weight: float = 0.3,
+    bandwidth_weight: float = 0.2,
+    seed: int = 42
+) -> Tuple[Dict[int, List[int]], Dict[int, int], np.ndarray, np.ndarray]:
     """
-    Top-level convenience: select heads + form clusters.
-    Returns (head_ids, clusters).
+    Cluster devices using graph-based features.
+    
+    Returns:
+        clusters: {cluster_id: [device_ids]}
+        cluster_heads: {cluster_id: head_device_id}
+        cc_values: clustering coefficients
+        apl_values: average path lengths
     """
-    head_ids = select_cluster_heads(
-        devices,
-        num_clusters,
-        cfg.score_w_compute,
-        cfg.score_w_clustering,
-        cfg.score_w_bandwidth,
-    )
-    clusters = form_clusters(devices, head_ids, cfg.max_cluster_size)
-    return head_ids, clusters
+    adj = build_adjacency_matrix(devices, d0)
+    
+    cc = compute_clustering_coefficients(adj)
+    apl = compute_average_path_lengths(adj)
+    
+    compute_powers = np.array([d.properties.compute_power for d in devices])
+    
+    features = np.column_stack([
+        normalize(cc),
+        normalize(apl),
+        normalize(compute_powers)
+    ])
+    
+    num_clusters = min(num_clusters, len(devices))
+    
+    kmeans = KMeans(n_clusters=num_clusters, random_state=seed, n_init=10)
+    labels = kmeans.fit_predict(features)
+    
+    clusters = {i: [] for i in range(num_clusters)}
+    for device_idx, cluster_id in enumerate(labels):
+        clusters[cluster_id].append(device_idx)
+    
+    for cluster_id in list(clusters.keys()):
+        if len(clusters[cluster_id]) == 0:
+            largest_cluster = max(clusters.keys(), key=lambda x: len(clusters[x]))
+            if len(clusters[largest_cluster]) > 1:
+                moved_device = clusters[largest_cluster].pop()
+                clusters[cluster_id].append(moved_device)
+    
+    cluster_heads = {}
+    bandwidths = np.array([d.properties.bandwidth for d in devices])
+    
+    for cluster_id, device_ids in clusters.items():
+        if len(device_ids) == 0:
+            continue
+        
+        scores = []
+        for device_id in device_ids:
+            score = (
+                cc_weight * cc[device_id] +
+                compute_weight * normalize(compute_powers)[device_id] +
+                bandwidth_weight * normalize(bandwidths)[device_id]
+            )
+            scores.append((device_id, score))
+        
+        head_id = max(scores, key=lambda x: x[1])[0]
+        cluster_heads[cluster_id] = head_id
+    
+    return clusters, cluster_heads, cc, apl
+
+
+def get_cluster_info(
+    clusters: Dict[int, List[int]],
+    cluster_heads: Dict[int, int],
+    devices: List[Device]
+) -> Dict:
+    """Get summary information about clusters."""
+    info = {
+        "num_clusters": len(clusters),
+        "cluster_sizes": {k: len(v) for k, v in clusters.items()},
+        "cluster_heads": cluster_heads,
+        "head_properties": {}
+    }
+    
+    for cluster_id, head_id in cluster_heads.items():
+        device = devices[head_id]
+        info["head_properties"][cluster_id] = {
+            "compute_power": device.properties.compute_power,
+            "bandwidth": device.properties.bandwidth,
+            "distance": device.properties.distance
+        }
+    
+    return info
