@@ -1,91 +1,105 @@
-"""
-Configuration for Hierarchical Federated Learning in UAV-assisted IoT Networks.
-IEEE Transactions-level study.
-"""
+"""Configuration for Hierarchical Federated Learning experiments."""
 
-import argparse
 from dataclasses import dataclass, field
 from typing import List, Optional
 
 
 @dataclass
-class Config:
-    # ─── Mode ────────────────────────────────────────────────────────────────
-    mode: str = "toy"           # "toy" | "full"
+class DeviceConfig:
+    compute_power_range: tuple = (0.5, 2.0)
+    bandwidth_range: tuple = (1.0, 10.0)
+    distance_range: tuple = (10.0, 100.0)
+    clustering_coeff_range: tuple = (0.3, 1.0)
 
-    # ─── Dataset ─────────────────────────────────────────────────────────────
-    dataset: str = "MNIST"      # auto-set from mode
-    iid: bool = False           # IID vs Non-IID
-    alpha: float = 0.5          # Dirichlet concentration (non-IID)
+
+@dataclass
+class DataConfig:
+    dataset: str = "mnist"
+    iid: bool = True
+    dirichlet_alpha: float = 0.5
     batch_size: int = 32
-    test_batch_size: int = 256
+    test_batch_size: int = 128
 
-    # ─── Devices ─────────────────────────────────────────────────────────────
-    num_devices: int = 25
-    num_clusters: int = 5
 
-    # ─── Training ────────────────────────────────────────────────────────────
-    num_rounds: int = 22
+@dataclass
+class TrainingConfig:
+    learning_rate: float = 0.01
     local_epochs: int = 2
-    lr: float = 0.01
-    momentum: float = 0.9
-    weight_decay: float = 1e-4
+    num_rounds: int = 25
+    optimizer: str = "sgd"
 
-    # ─── Clustering ──────────────────────────────────────────────────────────
-    score_w_compute: float = 0.5
-    score_w_clustering: float = 0.3
-    score_w_bandwidth: float = 0.2
-    max_cluster_size: int = 10
 
-    # ─── Compression ─────────────────────────────────────────────────────────
-    topk_fraction: float = 0.1     # fraction of params to keep
-    qsgd_levels: int = 8           # quantization levels
+@dataclass
+class CompressionConfig:
+    topk_ratio: float = 0.1
+    qsgd_levels: int = 8
 
-    # ─── Quorum ───────────────────────────────────────────────────────────────
-    quorum_fraction: float = 0.6   # fraction of cluster to select
 
-    # ─── Physical / Latency ──────────────────────────────────────────────────
-    base_compute_time: float = 1.0   # seconds per unit workload
-    model_bits: int = 32
-    agg_head_time: float = 0.05     # seconds
-    uav_comm_base: float = 0.1      # seconds
+@dataclass
+class QuorumConfig:
+    fraction: float = 0.6
+    rotation_window: int = 5
+    compute_weight: float = 0.7
+    bandwidth_weight: float = 0.3
+    noise_std: float = 0.1
 
-    # ─── Seeds ───────────────────────────────────────────────────────────────
-    seeds: List[int] = field(default_factory=lambda: [42, 7, 123])
 
-    # ─── Output ──────────────────────────────────────────────────────────────
+@dataclass
+class ClusteringConfig:
+    num_clusters: int = 5
+    d0: float = 50.0
+    cc_weight: float = 0.5
+    compute_weight: float = 0.3
+    bandwidth_weight: float = 0.2
+
+
+@dataclass
+class ExperimentConfig:
+    mode: str = "toy"
+    seed: int = 42
+    num_devices: int = 25
+    device: DeviceConfig = field(default_factory=DeviceConfig)
+    data: DataConfig = field(default_factory=DataConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    compression: CompressionConfig = field(default_factory=CompressionConfig)
+    quorum: QuorumConfig = field(default_factory=QuorumConfig)
+    clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     results_dir: str = "results"
-    device: str = "cpu"             # auto-detected
-
-    def apply_mode(self):
-        if self.mode == "toy":
-            self.dataset = "MNIST"
-            self.num_devices = 25
-            self.num_clusters = 5
-            self.num_rounds = 22
-            self.local_epochs = 2
-            self.seeds = [42, 7, 123]
-        else:  # full
-            self.dataset = "CIFAR10"
-            self.num_devices = 60
-            self.num_clusters = 10
-            self.num_rounds = 60
-            self.local_epochs = 4
-            self.seeds = [42, 7, 123, 17, 99]
+    methods: List[str] = field(default_factory=lambda: ["A", "B", "C", "D", "E", "F"])
 
 
-def parse_args() -> Config:
-    parser = argparse.ArgumentParser(description="HFL-UAV Federated Learning Study")
-    parser.add_argument("--mode", choices=["toy", "full"], default="toy")
-    parser.add_argument("--iid", action="store_true")
-    parser.add_argument("--alpha", type=float, default=0.5)
-    parser.add_argument("--device", type=str, default="cpu")
-    args = parser.parse_args()
+def get_toy_config() -> ExperimentConfig:
+    config = ExperimentConfig(
+        mode="toy",
+        seed=42,
+        num_devices=25,
+    )
+    config.data.dataset = "mnist"
+    config.data.batch_size = 32
+    config.training.num_rounds = 25
+    config.training.local_epochs = 2
+    config.clustering.num_clusters = 5
+    return config
 
-    cfg = Config()
-    cfg.mode = args.mode
-    cfg.iid = args.iid
-    cfg.alpha = args.alpha
-    cfg.device = args.device
-    cfg.apply_mode()
-    return cfg
+
+def get_full_config() -> ExperimentConfig:
+    config = ExperimentConfig(
+        mode="full",
+        seed=42,
+        num_devices=75,
+    )
+    config.data.dataset = "cifar10"
+    config.data.batch_size = 32
+    config.training.num_rounds = 75
+    config.training.local_epochs = 4
+    config.clustering.num_clusters = 10
+    return config
+
+
+def get_config(mode: str) -> ExperimentConfig:
+    if mode == "toy":
+        return get_toy_config()
+    elif mode == "full":
+        return get_full_config()
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
