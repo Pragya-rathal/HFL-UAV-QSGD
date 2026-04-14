@@ -1,337 +1,287 @@
-"""
-Main entry point for the HFL-UAV IEEE Transactions study.
+"""Main entry point for hierarchical federated learning experiments."""
 
-Usage:
-    python main.py --mode toy
-    python main.py --mode full
-"""
-
+import argparse
 import os
 import sys
-import copy
-import time
-import json
-import numpy as np
-import pandas as pd
 import torch
+import numpy as np
+import copy
+from typing import Dict
 
-from config import parse_args, Config
-from data_loader import load_data
-from model import get_model, clone_model, count_parameters, model_size_mb
-from devices import create_devices
-from clustering import build_clustering
-from federated import run_method
-from metrics import (
-    history_to_df, aggregate_seeds, compute_summary,
-    print_summary_table, get_cluster_latency_stats,
+from config import get_config, ExperimentConfig
+from data_loader import (
+    load_dataset,
+    iid_partition,
+    dirichlet_partition,
+    create_data_loaders,
+    get_test_loader
 )
-from plotting import generate_all_plots, METHODS
+from model import get_model, flatten_model, count_parameters
+from devices import create_devices, Device
+from clustering import cluster_devices, get_cluster_info
+from federated import FederatedTrainer
+from metrics import ExperimentMetrics, RoundMetrics, save_metrics
+from plotting import generate_all_plots
 
-EXPERIMENT_METHODS = [
-    "standard_fl",
-    "clustered_fl",
-    "topk_ef",
-    "qsgd",
-    "topk_quorum",
-    "qsgd_quorum",
-]
-
-
-# ─── Reproducibility ──────────────────────────────────────────────────────────
 
 def set_seed(seed: int):
-    import random
-    random.seed(seed)
-    np.random.seed(seed)
+    """Set random seeds for reproducibility."""
     torch.manual_seed(seed)
+    np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
 
-# ─── Single run (one seed, one method) ───────────────────────────────────────
-
-def run_single(method: str, seed: int, cfg: Config):
+def run_experiment(
+    method: str,
+    trainer: FederatedTrainer,
+    initial_model: torch.nn.Module,
+    config: ExperimentConfig
+) -> ExperimentMetrics:
+    """Run a single experiment for one method."""
     print(f"\n{'='*60}")
-    print(f"  Method={method}  Seed={seed}  Mode={cfg.mode}")
+    print(f"Running Method {method}: {get_method_description(method)}")
     print(f"{'='*60}")
-    set_seed(seed)
-
-    # Data – identical split per seed regardless of method
-    train_loaders, test_loader = load_data(
-        cfg.dataset, cfg.num_devices, cfg.iid, cfg.alpha,
-        seed, cfg.batch_size, cfg.test_batch_size,
-    )
-
-    # Devices – identical per seed
-    devices = create_devices(cfg.num_devices, seed)
-
-    # Clusters – identical per seed
-    head_ids, clusters = build_clustering(devices, cfg.num_clusters, cfg)
-
-    # Model – identical init per seed
-    set_seed(seed)  # reset before model init
-    global_model_init = get_model(cfg.dataset, cfg.device)
-
-    history = run_method(
-        method, global_model_init, train_loaders, test_loader,
-        devices, clusters, head_ids, cfg,
-    )
-    return history
-
-
-# ─── Full experiment across seeds ────────────────────────────────────────────
-
-def run_experiment(cfg: Config) -> dict:
-    """
-    Returns {method → [per-seed history]}.
-    """
-    results: dict = {m: [] for m in EXPERIMENT_METHODS}
-
-    for seed in cfg.seeds:
-        for method in EXPERIMENT_METHODS:
-            history = run_single(method, seed, cfg)
-            results[method].append(history)
-
-    return results
-
-
-# ─── Ablation: quorum sensitivity ────────────────────────────────────────────
-
-def run_quorum_sensitivity(cfg: Config) -> dict:
-    """Sweep quorum fraction for proposed methods."""
-    fractions = [0.3, 0.5, 0.6, 0.7, 0.9, 1.0]
-    quorum_results = {}
-
-    seed = cfg.seeds[0]
-    train_loaders, test_loader = load_data(
-        cfg.dataset, cfg.num_devices, cfg.iid, cfg.alpha,
-        seed, cfg.batch_size, cfg.test_batch_size,
-    )
-    devices = create_devices(cfg.num_devices, seed)
-    head_ids, clusters = build_clustering(devices, cfg.num_clusters, cfg)
-
-    for frac in fractions:
-        print(f"\n[Quorum sensitivity] fraction={frac:.2f}")
-        quorum_results[frac] = {}
-        for method in ("topk_quorum", "qsgd_quorum"):
-            cfg_copy = copy.copy(cfg)
-            cfg_copy.quorum_fraction = frac
-            set_seed(seed)
-            global_model_init = get_model(cfg.dataset, cfg.device)
-            history = run_method(
-                method, global_model_init, train_loaders, test_loader,
-                devices, clusters, head_ids, cfg_copy,
+    
+    trainer.reset(initial_model)
+    
+    exp_metrics = ExperimentMetrics(method=method)
+    
+    for round_num in range(1, config.training.num_rounds + 1):
+        if method == "A":
+            round_metrics = trainer.train_round_standard(
+                round_num,
+                config.training.local_epochs
             )
-            best_acc = max(h["accuracy"] for h in history)
-            avg_lat = np.mean([h["latency_round"] for h in history])
-            total_comm = sum(h["comm_total_mb"] for h in history)
-            quorum_results[frac][method] = (best_acc, avg_lat, total_comm)
-
-    return quorum_results
-
-
-# ─── Ablation: scaling analysis ──────────────────────────────────────────────
-
-def run_scaling(cfg: Config) -> dict:
-    """Vary num_devices, keep other params fixed."""
-    device_counts = [10, 20, 30, 40]  # reduced for speed in toy mode
-    if cfg.mode == "full":
-        device_counts = [20, 40, 60, 80]
-
-    scaling_results = {}
-    seed = cfg.seeds[0]
-    rounds_backup = cfg.num_rounds
-    cfg.num_rounds = max(5, cfg.num_rounds // 4)  # quick sweep
-
-    for n in device_counts:
-        print(f"\n[Scaling] num_devices={n}")
-        cfg_copy = copy.copy(cfg)
-        cfg_copy.num_devices = n
-        cfg_copy.num_clusters = max(2, n // 5)
-        scaling_results[n] = {}
-
-        train_loaders, test_loader = load_data(
-            cfg_copy.dataset, n, cfg_copy.iid, cfg_copy.alpha,
-            seed, cfg_copy.batch_size, cfg_copy.test_batch_size,
-        )
-        devices = create_devices(n, seed)
-        head_ids, clusters = build_clustering(devices, cfg_copy.num_clusters, cfg_copy)
-
-        for method in EXPERIMENT_METHODS:
-            set_seed(seed)
-            global_model_init = get_model(cfg_copy.dataset, cfg_copy.device)
-            history = run_method(
-                method, global_model_init, train_loaders, test_loader,
-                devices, clusters, head_ids, cfg_copy,
+        elif method == "B":
+            round_metrics = trainer.train_round_clustered(
+                round_num,
+                config.training.local_epochs
             )
-            scaling_results[n][method] = max(h["accuracy"] for h in history)
-
-    cfg.num_rounds = rounds_backup
-    return scaling_results
-
-
-# ─── Ablation: robustness ────────────────────────────────────────────────────
-
-def run_robustness(cfg: Config) -> dict:
-    """Sweep alpha and bandwidth scale."""
-    seed = cfg.seeds[0]
-    rounds_backup = cfg.num_rounds
-    cfg.num_rounds = max(5, cfg.num_rounds // 4)
-
-    robustness = {"alpha": {}, "bandwidth": {}}
-
-    for alpha in [0.1, 0.3, 0.5, 1.0, 5.0]:
-        print(f"\n[Robustness] alpha={alpha}")
-        cfg_copy = copy.copy(cfg)
-        cfg_copy.alpha = alpha
-        train_loaders, test_loader = load_data(
-            cfg_copy.dataset, cfg_copy.num_devices, False, alpha,
-            seed, cfg_copy.batch_size, cfg_copy.test_batch_size,
-        )
-        devices = create_devices(cfg_copy.num_devices, seed)
-        head_ids, clusters = build_clustering(devices, cfg_copy.num_clusters, cfg_copy)
-        robustness["alpha"][alpha] = {}
-        for method in EXPERIMENT_METHODS:
-            set_seed(seed)
-            global_model_init = get_model(cfg_copy.dataset, cfg_copy.device)
-            history = run_method(
-                method, global_model_init, train_loaders, test_loader,
-                devices, clusters, head_ids, cfg_copy,
+        elif method == "C":
+            round_metrics = trainer.train_round_topk(
+                round_num,
+                config.training.local_epochs
             )
-            robustness["alpha"][alpha][method] = max(h["accuracy"] for h in history)
-
-    for bw_scale in [0.5, 0.75, 1.0, 1.5, 2.0]:
-        print(f"\n[Robustness] bw_scale={bw_scale}")
-        devices_scaled = create_devices(cfg.num_devices, seed)
-        for d in devices_scaled:
-            d.bandwidth *= bw_scale
-        head_ids, clusters = build_clustering(devices_scaled, cfg.num_clusters, cfg)
-        train_loaders, test_loader = load_data(
-            cfg.dataset, cfg.num_devices, cfg.iid, cfg.alpha,
-            seed, cfg.batch_size, cfg.test_batch_size,
-        )
-        robustness["bandwidth"][bw_scale] = {}
-        for method in EXPERIMENT_METHODS:
-            set_seed(seed)
-            global_model_init = get_model(cfg.dataset, cfg.device)
-            history = run_method(
-                method, global_model_init, train_loaders, test_loader,
-                devices_scaled, clusters, head_ids, cfg,
+        elif method == "D":
+            round_metrics = trainer.train_round_qsgd(
+                round_num,
+                config.training.local_epochs
             )
-            robustness["bandwidth"][bw_scale][method] = max(h["accuracy"] for h in history)
-
-    cfg.num_rounds = rounds_backup
-    return robustness
-
-
-# ─── Save helpers ─────────────────────────────────────────────────────────────
-
-def save_results(
-    results: dict,
-    cfg: Config,
-    mode_dir: str,
-) -> tuple:
-    """Save per-method CSVs. Returns (all_dfs, agg_dfs, summary_df)."""
-    all_dfs: dict = {}
-    agg_dfs: dict = {}
-
-    for method, seed_histories in results.items():
-        method_dir = os.path.join(mode_dir, method)
-        os.makedirs(os.path.join(method_dir, "plots"), exist_ok=True)
-
-        seed_dfs = []
-        for si, (seed, history) in enumerate(zip(cfg.seeds, seed_histories)):
-            df = history_to_df(history, method, seed)
-            df.to_csv(os.path.join(method_dir, f"metrics_seed{seed}.csv"), index=False)
-            seed_dfs.append(df)
-
-        combined_df = pd.concat(seed_dfs)
-        combined_df.to_csv(os.path.join(method_dir, "metrics.csv"), index=False)
-        all_dfs[method] = seed_dfs
-        agg_dfs[method] = aggregate_seeds(seed_dfs)
-
-    summary_df = compute_summary(all_dfs)
-    return all_dfs, agg_dfs, summary_df
+        elif method == "E":
+            round_metrics = trainer.train_round_topk_quorum(
+                round_num,
+                config.training.local_epochs
+            )
+        elif method == "F":
+            round_metrics = trainer.train_round_qsgd_quorum(
+                round_num,
+                config.training.local_epochs
+            )
+        else:
+            raise ValueError(f"Unknown method: {method}")
+        
+        exp_metrics.add_round(round_metrics)
+        
+        if round_num % 5 == 0 or round_num == 1:
+            print(f"  Round {round_num:3d}: "
+                  f"Acc={round_metrics.accuracy:.2f}%, "
+                  f"Loss={round_metrics.loss:.4f}, "
+                  f"Lat={round_metrics.latency:.3f}s, "
+                  f"Comm={round_metrics.communication_mb:.2f}MB, "
+                  f"Active={round_metrics.active_devices}")
+    
+    print(f"\n  Final Results:")
+    print(f"    Best Accuracy: {exp_metrics.best_accuracy():.2f}%")
+    print(f"    Avg Latency: {exp_metrics.avg_latency():.3f}s")
+    print(f"    Total Communication: {exp_metrics.total_communication():.2f}MB")
+    
+    return exp_metrics
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
+def get_method_description(method: str) -> str:
+    """Get human-readable method description."""
+    descriptions = {
+        "A": "Standard FL (no clustering)",
+        "B": "Clustered FL",
+        "C": "Clustered FL + Top-K + Error Feedback",
+        "D": "Clustered FL + QSGD",
+        "E": "Clustered FL + Top-K + Quorum",
+        "F": "Clustered FL + QSGD + Quorum"
+    }
+    return descriptions.get(method, "Unknown")
+
 
 def main():
-    cfg = parse_args()
-
-    # Auto-detect CUDA
-    if torch.cuda.is_available() and cfg.device == "cpu":
-        cfg.device = "cuda"
-        print(f"[INFO] CUDA detected – using GPU.")
-    else:
-        print(f"[INFO] Using device: {cfg.device}")
-
-    mode_dir = os.path.join(cfg.results_dir, cfg.mode)
-    summaries_dir = os.path.join(cfg.results_dir, "summaries")
-    plots_dir = os.path.join(mode_dir, "plots")
-    os.makedirs(mode_dir, exist_ok=True)
-    os.makedirs(summaries_dir, exist_ok=True)
-    os.makedirs(plots_dir, exist_ok=True)
-
-    print(f"\n{'#'*60}")
-    print(f"  HFL-UAV Federated Learning  |  Mode: {cfg.mode.upper()}")
-    print(f"  Dataset: {cfg.dataset}  |  Devices: {cfg.num_devices}")
-    print(f"  Clusters: {cfg.num_clusters}  |  Rounds: {cfg.num_rounds}")
-    print(f"  Seeds: {cfg.seeds}  |  IID: {cfg.iid}  |  α: {cfg.alpha}")
-    print(f"{'#'*60}\n")
-
-    # ── Main experiment ───────────────────────────────────────────────────
-    t0 = time.time()
-    results = run_experiment(cfg)
-    elapsed = time.time() - t0
-    print(f"\n[INFO] Main experiment done in {elapsed/60:.1f} min.")
-
-    # ── Save ──────────────────────────────────────────────────────────────
-    all_dfs, agg_dfs, summary_df = save_results(results, cfg, mode_dir)
-
-    summary_df.to_csv(os.path.join(summaries_dir, f"{cfg.mode}_summary.csv"), index=False)
-    print_summary_table(summary_df)
-
-    # ── Cluster latency data ──────────────────────────────────────────────
-    cluster_lat_dfs = {}
-    for method, seed_histories in results.items():
-        cdf = get_cluster_latency_stats(seed_histories)
-        cluster_lat_dfs[method] = cdf
-
-    # ── Ablations ─────────────────────────────────────────────────────────
-    print("\n[INFO] Running quorum sensitivity sweep...")
-    quorum_results = run_quorum_sensitivity(cfg)
-
-    print("\n[INFO] Running scaling analysis...")
-    scaling_results = run_scaling(cfg)
-
-    print("\n[INFO] Running robustness sweep...")
-    robustness_results = run_robustness(cfg)
-
-    # ── Plots ─────────────────────────────────────────────────────────────
-    print("\n[INFO] Generating plots...")
-    n_plots = generate_all_plots(
-        agg_dfs, summary_df, cluster_lat_dfs, plots_dir,
-        quorum_results=quorum_results,
-        scaling_results=scaling_results,
-        robustness_results=robustness_results,
+    parser = argparse.ArgumentParser(
+        description="Hierarchical Federated Learning in UAV-assisted IoT Networks"
     )
-
-    # ── Aggregate CSV ─────────────────────────────────────────────────────
-    agg_path = os.path.join(summaries_dir, "aggregate.csv")
-    summary_df.to_csv(agg_path, index=False)
-
-    # ── Final report ─────────────────────────────────────────────────────
-    print(f"\n{'='*60}")
-    print("  OUTPUT FILE LOCATIONS")
-    print(f"{'='*60}")
-    print(f"  Mode results dir  : {os.path.abspath(mode_dir)}")
-    print(f"  Summary CSV       : {os.path.abspath(os.path.join(summaries_dir, cfg.mode + '_summary.csv'))}")
-    print(f"  Aggregate CSV     : {os.path.abspath(agg_path)}")
-    print(f"  Plots dir         : {os.path.abspath(plots_dir)}")
-    print(f"\n  All plots saved in {os.path.abspath(plots_dir)}/")
-    print(f"  Total plots generated: {n_plots}")
-    print(f"{'='*60}\n")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["toy", "full"],
+        default="toy",
+        help="Experiment mode: 'toy' for quick testing, 'full' for complete experiment"
+    )
+    parser.add_argument(
+        "--methods",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Specific methods to run (e.g., A B C). Default: all methods"
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="results",
+        help="Output directory for results"
+    )
+    
+    args = parser.parse_args()
+    
+    config = get_config(args.mode)
+    config.seed = args.seed
+    config.results_dir = args.output_dir
+    
+    if args.methods:
+        config.methods = args.methods
+    
+    set_seed(config.seed)
+    
+    print("="*60)
+    print(f"Hierarchical Federated Learning Experiment")
+    print(f"Mode: {config.mode.upper()}")
+    print("="*60)
+    print(f"\nConfiguration:")
+    print(f"  Dataset: {config.data.dataset.upper()}")
+    print(f"  Num Devices: {config.num_devices}")
+    print(f"  Num Clusters: {config.clustering.num_clusters}")
+    print(f"  Num Rounds: {config.training.num_rounds}")
+    print(f"  Local Epochs: {config.training.local_epochs}")
+    print(f"  Learning Rate: {config.training.learning_rate}")
+    print(f"  Batch Size: {config.data.batch_size}")
+    print(f"  Methods: {config.methods}")
+    print(f"  Seed: {config.seed}")
+    
+    print("\nLoading dataset...")
+    train_dataset, test_dataset = load_dataset(config.data.dataset)
+    print(f"  Train samples: {len(train_dataset)}")
+    print(f"  Test samples: {len(test_dataset)}")
+    
+    print("\nPartitioning data...")
+    if config.data.iid:
+        device_indices = iid_partition(
+            train_dataset,
+            config.num_devices,
+            config.seed
+        )
+        print("  Distribution: IID")
+    else:
+        device_indices = dirichlet_partition(
+            train_dataset,
+            config.num_devices,
+            config.data.dirichlet_alpha,
+            config.seed
+        )
+        print(f"  Distribution: Non-IID (Dirichlet α={config.data.dirichlet_alpha})")
+    
+    samples_per_device = [len(indices) for indices in device_indices.values()]
+    print(f"  Samples per device: min={min(samples_per_device)}, "
+          f"max={max(samples_per_device)}, avg={np.mean(samples_per_device):.1f}")
+    
+    data_loaders = create_data_loaders(
+        train_dataset,
+        device_indices,
+        config.data.batch_size
+    )
+    test_loader = get_test_loader(test_dataset, config.data.test_batch_size)
+    
+    print("\nInitializing model...")
+    model = get_model(config.data.dataset)
+    num_params = count_parameters(model)
+    print(f"  Model: {type(model).__name__}")
+    print(f"  Parameters: {num_params:,}")
+    
+    print("\nCreating devices...")
+    devices = create_devices(
+        config.num_devices,
+        data_loaders,
+        model,
+        config,
+        config.seed
+    )
+    
+    compute_powers = [d.properties.compute_power for d in devices]
+    bandwidths = [d.properties.bandwidth for d in devices]
+    print(f"  Compute Power: min={min(compute_powers):.2f}, "
+          f"max={max(compute_powers):.2f}, avg={np.mean(compute_powers):.2f}")
+    print(f"  Bandwidth: min={min(bandwidths):.2f}, "
+          f"max={max(bandwidths):.2f}, avg={np.mean(bandwidths):.2f} Mbps")
+    
+    print("\nClustering devices...")
+    clusters, cluster_heads, cc_values, apl_values = cluster_devices(
+        devices,
+        config.clustering.num_clusters,
+        config.clustering.d0,
+        config.clustering.cc_weight,
+        config.clustering.compute_weight,
+        config.clustering.bandwidth_weight,
+        config.seed
+    )
+    
+    cluster_info = get_cluster_info(clusters, cluster_heads, devices)
+    print(f"  Clusters formed: {cluster_info['num_clusters']}")
+    print(f"  Cluster sizes: {cluster_info['cluster_sizes']}")
+    print(f"  Cluster heads: {cluster_info['cluster_heads']}")
+    
+    print("\nInitializing trainer...")
+    initial_model = copy.deepcopy(model)
+    trainer = FederatedTrainer(
+        model=model,
+        devices=devices,
+        test_loader=test_loader,
+        config=config,
+        clusters=clusters,
+        cluster_heads=cluster_heads
+    )
+    
+    all_metrics: Dict[str, ExperimentMetrics] = {}
+    
+    for method in config.methods:
+        exp_metrics = run_experiment(method, trainer, initial_model, config)
+        all_metrics[method] = exp_metrics
+    
+    print("\n" + "="*60)
+    print("Saving results...")
+    print("="*60)
+    
+    os.makedirs(config.results_dir, exist_ok=True)
+    save_metrics(all_metrics, config.results_dir, config.mode)
+    print(f"  Metrics saved to {config.results_dir}/{config.mode}/")
+    
+    print("\nGenerating plots...")
+    generate_all_plots(all_metrics, config.results_dir, config.mode)
+    
+    print("\n" + "="*60)
+    print("FINAL SUMMARY")
+    print("="*60)
+    print(f"\n{'Method':<35} {'Best Acc':<12} {'Avg Lat':<12} {'Total Comm':<15}")
+    print("-"*74)
+    for method in sorted(all_metrics.keys()):
+        m = all_metrics[method]
+        desc = get_method_description(method)
+        print(f"{method}: {desc:<30} {m.best_accuracy():>8.2f}%    "
+              f"{m.avg_latency():>8.3f}s    {m.total_communication():>10.2f}MB")
+    
+    print("\n" + "="*60)
+    print("Experiment completed successfully!")
+    print("="*60)
 
 
 if __name__ == "__main__":
