@@ -1,80 +1,137 @@
-"""
-IoT Device Model for UAV-assisted Hierarchical Federated Learning.
-Each device has physically meaningful parameters.
-"""
+"""Device representation and management."""
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from typing import Dict, List, Optional, Tuple
 import numpy as np
 from dataclasses import dataclass, field
-from typing import List, Optional
+
+from model import flatten_model, load_model, get_model_size_mb
 
 
 @dataclass
-class IoTDevice:
+class DeviceProperties:
     device_id: int
-    compute_power: float          # FLOPS scaling [0.5, 2.0]
-    bandwidth: float              # Mbps [1, 10]
-    distance: float               # meters [10, 100]
-    channel_quality: float        # 1/d – monotonic decreasing
-    clustering_coefficient: float # [0.3, 1.0]
-    score: float = 0.0
-    cluster_id: int = -1
-    is_cluster_head: bool = False
-    residual_buffer: Optional[np.ndarray] = None  # for error feedback
-    energy_used: float = 0.0      # optional tracking
-
-    # ─── Latency helpers ────────────────────────────────────────────────────
-    def compute_time(self, base_compute_time: float) -> float:
-        """T_comp = base_compute_time / compute_power"""
-        return base_compute_time / self.compute_power
-
-    def comm_time(self, message_size_mb: float) -> float:
-        """T_comm = message_size (MB) / bandwidth (Mbps) * 8 (bits/byte)"""
-        return (message_size_mb * 8.0) / self.bandwidth   # seconds
-
-    def total_time(self, base_compute_time: float, message_size_mb: float) -> float:
-        return self.compute_time(base_compute_time) + self.comm_time(message_size_mb)
+    compute_power: float
+    bandwidth: float
+    distance: float
+    channel_quality: float
+    clustering_coefficient: float = 0.5
 
 
-def create_devices(num_devices: int, seed: int) -> List[IoTDevice]:
-    """
-    Deterministically create a heterogeneous set of IoT devices.
-    All physical parameters drawn from realistic distributions.
-    """
-    rng = np.random.RandomState(seed)
+@dataclass
+class DeviceState:
+    residual: Optional[torch.Tensor] = None
+    last_participated_round: int = -1
+    total_samples_trained: int = 0
 
+
+class Device:
+    """Represents an IoT device in the federated learning system."""
+    
+    def __init__(
+        self,
+        device_id: int,
+        properties: DeviceProperties,
+        data_loader: DataLoader,
+        model_template: nn.Module,
+        learning_rate: float = 0.01,
+        torch_device: str = "cpu"
+    ):
+        self.device_id = device_id
+        self.properties = properties
+        self.data_loader = data_loader
+        self.num_samples = len(data_loader.dataset)
+        self.learning_rate = learning_rate
+        self.torch_device = torch_device
+        
+        self.model = type(model_template)().to(torch_device)
+        self.state = DeviceState()
+    
+    def train_local(
+        self,
+        global_params: torch.Tensor,
+        num_epochs: int
+    ) -> Tuple[torch.Tensor, int]:
+        """Train locally and return update (local - global)."""
+        load_model(self.model, global_params.clone())
+        self.model.train()
+        
+        optimizer = optim.SGD(self.model.parameters(), lr=self.learning_rate)
+        criterion = nn.CrossEntropyLoss()
+        
+        for _ in range(num_epochs):
+            for data, target in self.data_loader:
+                data, target = data.to(self.torch_device), target.to(self.torch_device)
+                optimizer.zero_grad()
+                output = self.model(data)
+                loss = criterion(output, target)
+                loss.backward()
+                optimizer.step()
+        
+        local_params = flatten_model(self.model)
+        update = local_params - global_params
+        
+        self.state.total_samples_trained += self.num_samples * num_epochs
+        
+        return update, self.num_samples
+    
+    def compute_latency(
+        self,
+        num_epochs: int,
+        message_size_mb: float
+    ) -> Tuple[float, float, float]:
+        """Compute training and communication latency."""
+        num_batches = len(self.data_loader)
+        base_compute_time = num_batches * num_epochs * 0.01
+        t_comp = base_compute_time / self.properties.compute_power
+        
+        t_comm = (message_size_mb * 8) / self.properties.bandwidth
+        
+        t_total = t_comp + t_comm
+        
+        return t_comp, t_comm, t_total
+
+
+def create_devices(
+    num_devices: int,
+    data_loaders: Dict[int, DataLoader],
+    model_template: nn.Module,
+    config,
+    seed: int
+) -> List[Device]:
+    """Create device instances with random properties."""
+    np.random.seed(seed)
+    
     devices = []
+    device_cfg = config.device
+    
     for i in range(num_devices):
-        distance = rng.uniform(10.0, 100.0)
-        channel_quality = 1.0 / distance          # monotonic decreasing
-
-        dev = IoTDevice(
+        compute_power = np.random.uniform(*device_cfg.compute_power_range)
+        bandwidth = np.random.uniform(*device_cfg.bandwidth_range)
+        distance = np.random.uniform(*device_cfg.distance_range)
+        channel_quality = 1.0 / distance
+        clustering_coeff = np.random.uniform(*device_cfg.clustering_coeff_range)
+        
+        properties = DeviceProperties(
             device_id=i,
-            compute_power=rng.uniform(0.5, 2.0),
-            bandwidth=rng.uniform(1.0, 10.0),
+            compute_power=compute_power,
+            bandwidth=bandwidth,
             distance=distance,
             channel_quality=channel_quality,
-            clustering_coefficient=rng.uniform(0.3, 1.0),
+            clustering_coefficient=clustering_coeff
         )
-        devices.append(dev)
+        
+        device = Device(
+            device_id=i,
+            properties=properties,
+            data_loader=data_loaders[i],
+            model_template=model_template,
+            learning_rate=config.training.learning_rate
+        )
+        
+        devices.append(device)
+    
     return devices
-
-
-def compute_device_scores(
-    devices: List[IoTDevice],
-    w_compute: float,
-    w_clustering: float,
-    w_bandwidth: float,
-) -> None:
-    """Assign cluster-head selection scores in-place (normalised)."""
-    cp = np.array([d.compute_power for d in devices])
-    cc = np.array([d.clustering_coefficient for d in devices])
-    bw = np.array([d.bandwidth for d in devices])
-
-    # normalise each dimension to [0,1]
-    def norm(x):
-        lo, hi = x.min(), x.max()
-        return (x - lo) / (hi - lo + 1e-8)
-
-    scores = w_compute * norm(cp) + w_clustering * norm(cc) + w_bandwidth * norm(bw)
-    for dev, s in zip(devices, scores):
-        dev.score = float(s)
