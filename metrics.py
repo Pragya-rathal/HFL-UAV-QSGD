@@ -1,117 +1,162 @@
-"""
-Metrics aggregation, summary statistics, and convergence analysis.
-"""
+"""Metrics tracking and evaluation."""
 
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from typing import Dict, List, Optional
 import numpy as np
-import pandas as pd
-from typing import List, Dict, Tuple, Optional
+from dataclasses import dataclass, field
+import json
+import os
 
 
-METHOD_LABELS = {
-    "standard_fl": "A: Std-FL",
-    "clustered_fl": "B: Clustered-FL",
-    "topk_ef": "C: Top-K+EF",
-    "qsgd": "D: QSGD",
-    "topk_quorum": "E: Top-K+Quorum (Prop.)",
-    "qsgd_quorum": "F: QSGD+Quorum (Prop.)",
-}
+@dataclass
+class RoundMetrics:
+    round_num: int
+    accuracy: float
+    loss: float
+    latency: float
+    communication_mb: float
+    active_devices: int
+    cluster_latencies: Optional[Dict[int, float]] = None
 
 
-def history_to_df(history: List[Dict], method: str, seed: int) -> pd.DataFrame:
-    rows = []
-    for h in history:
-        row = dict(h)
-        row["method"] = method
-        row["seed"] = seed
-        row.pop("cluster_times", None)
-        rows.append(row)
-    return pd.DataFrame(rows)
+@dataclass
+class ExperimentMetrics:
+    method: str
+    rounds: List[RoundMetrics] = field(default_factory=list)
+    
+    def add_round(self, metrics: RoundMetrics):
+        self.rounds.append(metrics)
+    
+    def get_accuracies(self) -> List[float]:
+        return [r.accuracy for r in self.rounds]
+    
+    def get_losses(self) -> List[float]:
+        return [r.loss for r in self.rounds]
+    
+    def get_latencies(self) -> List[float]:
+        return [r.latency for r in self.rounds]
+    
+    def get_communications(self) -> List[float]:
+        return [r.communication_mb for r in self.rounds]
+    
+    def get_active_devices(self) -> List[int]:
+        return [r.active_devices for r in self.rounds]
+    
+    def best_accuracy(self) -> float:
+        return max(self.get_accuracies()) if self.rounds else 0.0
+    
+    def avg_latency(self) -> float:
+        latencies = self.get_latencies()
+        return sum(latencies) / len(latencies) if latencies else 0.0
+    
+    def total_communication(self) -> float:
+        return sum(self.get_communications())
+    
+    def to_dict(self) -> Dict:
+        return {
+            "method": self.method,
+            "rounds": [
+                {
+                    "round": r.round_num,
+                    "accuracy": r.accuracy,
+                    "loss": r.loss,
+                    "latency": r.latency,
+                    "communication_mb": r.communication_mb,
+                    "active_devices": r.active_devices
+                }
+                for r in self.rounds
+            ],
+            "summary": {
+                "best_accuracy": self.best_accuracy(),
+                "avg_latency": self.avg_latency(),
+                "total_communication": self.total_communication()
+            }
+        }
 
 
-def aggregate_seeds(dfs: List[pd.DataFrame]) -> pd.DataFrame:
-    """Given per-seed DataFrames, compute mean ± std across seeds per round."""
-    combined = pd.concat(dfs)
-    numeric_cols = [c for c in combined.columns
-                    if c not in ("method", "seed", "round")]
-    agg = combined.groupby("round")[numeric_cols].agg(["mean", "std"]).reset_index()
-    agg.columns = ["_".join(c).strip("_") if isinstance(c, tuple) else c
-                   for c in agg.columns]
-    return agg
+def evaluate_model(
+    model: nn.Module,
+    test_loader: DataLoader,
+    device: str = "cpu"
+) -> tuple:
+    """Evaluate model on test set."""
+    model.eval()
+    model.to(device)
+    
+    test_loss = 0.0
+    correct = 0
+    total = 0
+    criterion = nn.CrossEntropyLoss()
+    
+    with torch.no_grad():
+        for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+            output = model(data)
+            test_loss += criterion(output, target).item() * len(target)
+            pred = output.argmax(dim=1)
+            correct += pred.eq(target).sum().item()
+            total += len(target)
+    
+    accuracy = 100.0 * correct / total
+    avg_loss = test_loss / total
+    
+    return accuracy, avg_loss
 
 
-def compute_summary(all_dfs: Dict[str, List[pd.DataFrame]]) -> pd.DataFrame:
-    """
-    Per-method summary: best_acc, avg_latency, total_comm, convergence_round.
-    mean ± std across seeds.
-    """
-    rows = []
-    for method, dfs in all_dfs.items():
-        method_stats = []
-        for df in dfs:
-            best_acc = df["accuracy"].max()
-            avg_lat = df["latency_round"].mean()
-            total_comm = df["comm_total_mb"].sum()
-            # Convergence: first round where accuracy >= 0.95 * best_acc
-            threshold = 0.95 * best_acc
-            conv_rounds = df[df["accuracy"] >= threshold]["round"]
-            conv_round = int(conv_rounds.iloc[0]) if len(conv_rounds) > 0 else len(df)
-            method_stats.append((best_acc, avg_lat, total_comm, conv_round))
-
-        arr = np.array(method_stats)
-        rows.append({
-            "method": method,
-            "label": METHOD_LABELS.get(method, method),
-            "best_acc_mean": arr[:, 0].mean(),
-            "best_acc_std": arr[:, 0].std(),
-            "avg_latency_mean": arr[:, 1].mean(),
-            "avg_latency_std": arr[:, 1].std(),
-            "total_comm_mb_mean": arr[:, 2].mean(),
-            "total_comm_mb_std": arr[:, 2].std(),
-            "convergence_round_mean": arr[:, 3].mean(),
-            "convergence_round_std": arr[:, 3].std(),
-        })
-
-    return pd.DataFrame(rows)
+def save_metrics(
+    metrics: Dict[str, ExperimentMetrics],
+    output_dir: str,
+    mode: str
+):
+    """Save metrics to JSON files."""
+    mode_dir = os.path.join(output_dir, mode)
+    os.makedirs(mode_dir, exist_ok=True)
+    
+    for method, exp_metrics in metrics.items():
+        filepath = os.path.join(mode_dir, f"method_{method}.json")
+        with open(filepath, 'w') as f:
+            json.dump(exp_metrics.to_dict(), f, indent=2)
+    
+    summary_dir = os.path.join(output_dir, mode, "summaries")
+    os.makedirs(summary_dir, exist_ok=True)
+    
+    summary = {}
+    for method, exp_metrics in metrics.items():
+        summary[method] = {
+            "best_accuracy": exp_metrics.best_accuracy(),
+            "avg_latency": exp_metrics.avg_latency(),
+            "total_communication": exp_metrics.total_communication()
+        }
+    
+    with open(os.path.join(summary_dir, "summary.json"), 'w') as f:
+        json.dump(summary, f, indent=2)
 
 
-def print_summary_table(summary_df: pd.DataFrame) -> None:
-    print("\n" + "=" * 90)
-    print("METHOD COMPARISON TABLE")
-    print("=" * 90)
-    hdr = (f"{'Method':<30} {'Best Acc':>10} {'Avg Lat(s)':>12} "
-           f"{'Total Comm(MB)':>16} {'Conv Round':>12}")
-    print(hdr)
-    print("-" * 90)
-    for _, row in summary_df.iterrows():
-        print(
-            f"{row['label']:<30} "
-            f"{row['best_acc_mean']:6.4f}±{row['best_acc_std']:.4f}  "
-            f"{row['avg_latency_mean']:8.3f}±{row['avg_latency_std']:.3f}  "
-            f"{row['total_comm_mb_mean']:10.2f}±{row['total_comm_mb_std']:.2f}  "
-            f"{row['convergence_round_mean']:6.1f}±{row['convergence_round_std']:.1f}"
-        )
-    print("=" * 90)
-
-    # Best method under each constraint
-    print("\nBEST METHOD UNDER CONSTRAINTS:")
-    best_acc_idx = summary_df["best_acc_mean"].idxmax()
-    best_lat_idx = summary_df["avg_latency_mean"].idxmin()
-    best_comm_idx = summary_df["total_comm_mb_mean"].idxmin()
-
-    print(f"  Accuracy  constraint → {summary_df.loc[best_acc_idx, 'label']}"
-          f"  (acc={summary_df.loc[best_acc_idx, 'best_acc_mean']:.4f})")
-    print(f"  Latency   constraint → {summary_df.loc[best_lat_idx, 'label']}"
-          f"  (lat={summary_df.loc[best_lat_idx, 'avg_latency_mean']:.3f}s)")
-    print(f"  Comm.     constraint → {summary_df.loc[best_comm_idx, 'label']}"
-          f"  (comm={summary_df.loc[best_comm_idx, 'total_comm_mb_mean']:.2f}MB)")
-    print()
-
-
-def get_cluster_latency_stats(history_list: List[List[Dict]]) -> pd.DataFrame:
-    """Extract per-cluster latency distribution across rounds and seeds."""
-    rows = []
-    for history in history_list:
-        for h in history:
-            for ct in h.get("cluster_times", []):
-                rows.append({"round": h["round"], "cluster_latency": ct})
-    return pd.DataFrame(rows)
+def load_metrics(output_dir: str, mode: str) -> Dict[str, ExperimentMetrics]:
+    """Load metrics from JSON files."""
+    mode_dir = os.path.join(output_dir, mode)
+    metrics = {}
+    
+    for filename in os.listdir(mode_dir):
+        if filename.startswith("method_") and filename.endswith(".json"):
+            method = filename[7:-5]
+            filepath = os.path.join(mode_dir, filename)
+            
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+            
+            exp_metrics = ExperimentMetrics(method=method)
+            for r in data["rounds"]:
+                exp_metrics.add_round(RoundMetrics(
+                    round_num=r["round"],
+                    accuracy=r["accuracy"],
+                    loss=r["loss"],
+                    latency=r["latency"],
+                    communication_mb=r["communication_mb"],
+                    active_devices=r["active_devices"]
+                ))
+            metrics[method] = exp_metrics
+    
+    return metrics
