@@ -8,12 +8,14 @@ from typing import List, Dict, Tuple, Optional
 
 
 METHOD_LABELS = {
-    "standard_fl": "A: Std-FL",
+    "standard_fl":  "A: Std-FL",
     "clustered_fl": "B: Clustered-FL",
-    "topk_ef": "C: Top-K+EF",
-    "qsgd": "D: QSGD",
-    "topk_quorum": "E: Top-K+Quorum (Prop.)",
-    "qsgd_quorum": "F: QSGD+Quorum (Prop.)",
+    "topk_ef":      "C: Top-K+EF",
+    "qsgd":         "D: QSGD",
+    "topk_quorum":  "E: Top-K+Quorum (Prop.)",
+    "qsgd_quorum":  "F: QSGD+Quorum (Prop.)",
+    "fedprox":      "G: FedProx",
+    "topoco":       "H: TopoCo (Ours)",
 }
 
 
