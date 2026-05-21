@@ -283,7 +283,9 @@ def plot_cluster_latency(cluster_lat_dfs: Dict[str, pd.DataFrame], plots_dir):
             labels.append(_label(m))
     if data:
         axes[1].boxplot(data, labels=labels)
-        axes[1].set_xticklabels(labels, rotation=20, ha="right")
+        axes[1].tick_params(axis="x", rotation=20)
+        for tick in axes[1].get_xticklabels():
+            tick.set_ha("right")
     axes[1].set_ylabel("Cluster Latency (s)")
     axes[1].set_title("Cluster Latency Distribution")
     axes[1].grid(True)
