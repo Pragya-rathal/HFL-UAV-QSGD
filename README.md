@@ -29,6 +29,8 @@ The framework evaluates:
 - Top-K Gradient Compression + Error Feedback
 - QSGD Quantization
 - Quorum-based device selection
+- FedProx (proximal regularisation baseline)
+- TopoCo: topology-adaptive primal-dual co-optimisation
 - IID and Non-IID (Dirichlet) data splits
 - Full experiment + plotting pipeline
 
@@ -38,14 +40,20 @@ The framework evaluates:
 
 ```
 .
-├── main.py              # Entry point :contentReference[oaicite:0]{index=0}
-├── federated.py         # FL algorithms :contentReference[oaicite:1]{index=1}
-├── model.py             # NumPy MLP model :contentReference[oaicite:2]{index=2}
-├── compression.py       # Top-K + QSGD :contentReference[oaicite:3]{index=3}
-├── clustering.py        # Cluster formation :contentReference[oaicite:4]{index=4}
-├── data_loader.py       # MNIST / CIFAR-10 loader :contentReference[oaicite:5]{index=5}
-├── metrics.py           # Metrics + summary :contentReference[oaicite:6]{index=6}
-├── plotting.py          # All visualizations :contentReference[oaicite:7]{index=7}
+├── main.py              # Entry point
+├── federated.py         # FL algorithms (6 classic methods + dispatch)
+├── federated_round.py   # TopoCo per-round primal-dual loop
+├── baselines.py         # FedProx baseline
+├── model.py             # CNN models (MNIST / CIFAR-10)
+├── compression.py       # Top-K + QSGD
+├── clustering.py        # Cluster formation + head election
+├── data_loader.py       # MNIST / CIFAR-10 loader
+├── metrics.py           # Metrics + summary
+├── plotting.py          # Base visualizations
+├── plotting_topoco.py   # TopoCo-specific visualizations
+├── topology.py          # Dynamic communication graph
+├── utility.py           # Lagrangian state + dual updates
+├── schedules.py         # Adaptive compression + participation
 ├── config.py            # Experiment configs
 ├── devices.py           # Device simulation
 └── results/             # Outputs
@@ -83,13 +91,15 @@ python main.py --mode full
 ## 📊 Methods Implemented
 
 | Method | Description |
-|------|-------------|
+|--------|-------------|
 | A | Standard FL (FedAvg) |
 | B | Clustered FL |
 | C | Top-K + Error Feedback |
 | D | QSGD |
 | E | Top-K + Quorum |
 | F | QSGD + Quorum |
+| G | FedProx (modern baseline) |
+| H | TopoCo — primal-dual topology-adaptive co-optimisation (ours) |
 
 ---
 
