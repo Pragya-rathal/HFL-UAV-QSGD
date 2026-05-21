@@ -213,34 +213,25 @@ def update_divergence_proxy(
     ema_alpha: float = 0.5,
 ) -> Dict[int, float]:
     """
-    EMA over per-device update norms.  Devices that contribute large updates
-    are 'higher divergence cost to skip' — so they get a higher d̂_i and the
-    -λ_D d̂_i term penalises skipping them.
+    EMA over per-device update norms, producing d̂_i — the *cost-to-skip* proxy.
 
-    Important: by construction we *want* to keep high-divergence devices
-    participating.  Make sure the sign convention is right where this is used
-    (we subtract λ_D · d̂_i in the score, but in `compute_per_device_score`
-    we want higher d̂_i to *reduce* the score, which would push us *away* from
-    keeping them — wrong direction!)
+    Convention (consistent with compute_per_device_score):
+      d̂_i = 1 − ‖Δw_i‖² / max_norm   ∈ [0, 1]
 
-    The fix is to interpret d̂_i as the *cost of NOT selecting i*. In the
-    selection objective, the term that captures "I should keep this device"
-    is +λ_D d̂_i  (reward for inclusion when divergence pressure is high).
-    See the per-device score formula at the top — we *add* not subtract.
+    A device with a large update (high ‖Δw_i‖²) gets a LOW d̂_i.
+    In compute_per_device_score the term is −(1+λ_D)·d̂_i, so a smaller d̂_i
+    means a *smaller penalty*, which makes high-divergence devices more likely
+    to be selected. This is the desired behaviour: when λ_D is high (divergence
+    budget violated), important devices (low d̂_i) are relatively favoured.
 
-    Implementation note: in compute_per_device_score above we currently
-    subtract.  We resolve this by passing divergence_proxy[i] as a *negative*
-    value when it represents 'expensive to skip', so the −(1+λ_D)·d̂_i term
-    becomes positive.  Cleaner: rewrite the score to *add* λ_D·d̂_i.
-    For now we use the convention: d̂_i = max_norm − ‖Δw_i‖²  (so important
-    devices have small d̂_i, score penalised less).
+    Devices with no history default to d̂_i = 1.0 (worst-case / unimportant).
     """
     out = dict(proxy)
     if not last_updates_norm:
         return out
     max_norm = max(last_updates_norm.values()) + 1e-9
     for nid, n in last_updates_norm.items():
-        # 'd̂_i' = how cheap is it to skip this device (low if device is important)
-        cost_to_skip = 1.0 - (n / max_norm)        # 0 = important, 1 = unimportant
+        # d̂_i = 0 → high divergence (expensive to skip); 1 → low divergence
+        cost_to_skip = 1.0 - (n / max_norm)
         out[nid] = ema_alpha * out.get(nid, 1.0) + (1 - ema_alpha) * cost_to_skip
     return out
