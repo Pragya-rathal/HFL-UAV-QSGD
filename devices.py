@@ -9,6 +9,7 @@ Changes from the previous version:
   • ADDED:   `bandwidth_baseline` — the bandwidth around which round-by-round
     fluctuation happens (so noise doesn't compound).
   • ADDED:   `is_active` — set to False on round-by-round transient dropouts.
+  • ADDED:   `compute_device_scores()` — used by clustering.py for head selection.
 
 `distance` is retained but reinterpreted: distance from the UAV (not relevant
 to D2D edges, which use Euclidean distance between positions).
@@ -53,6 +54,52 @@ class IoTDevice:
 
     def total_time(self, base_compute_time: float, message_size_mb: float) -> float:
         return self.compute_time(base_compute_time) + self.comm_time(message_size_mb)
+
+
+def compute_device_scores(
+    devices: List["IoTDevice"],
+    w_compute: float,
+    w_clustering: float,
+    w_bandwidth: float,
+) -> None:
+    """
+    Compute a composite score for each device and write it to device.score.
+
+    Score = w_compute  * normalised(compute_power)
+           + w_clustering * normalised(1 / distance_to_UAV)   [proxy for centrality]
+           + w_bandwidth  * normalised(bandwidth)
+
+    Scores are written in-place; the function is intentionally side-effecting
+    so that select_cluster_heads() can sort by device.score immediately after.
+    All three components are min-max normalised to [0, 1] across the population
+    to make the weights dimensionally consistent.
+    """
+    if not devices:
+        return
+
+    def _norm(vals: List[float]) -> List[float]:
+        lo, hi = min(vals), max(vals)
+        rng = hi - lo
+        if rng < 1e-12:
+            return [0.5] * len(vals)
+        return [(v - lo) / rng for v in vals]
+
+    compute_vals = [d.compute_power for d in devices]
+    # Centrality proxy: closer to UAV (smaller distance) → higher score.
+    # Use 1/(distance+1) to avoid division by zero and keep ordering intuitive.
+    centrality_vals = [1.0 / (d.distance + 1.0) for d in devices]
+    bw_vals = [d.bandwidth for d in devices]
+
+    compute_n   = _norm(compute_vals)
+    centrality_n = _norm(centrality_vals)
+    bw_n        = _norm(bw_vals)
+
+    for i, d in enumerate(devices):
+        d.score = (
+            w_compute   * compute_n[i]
+            + w_clustering * centrality_n[i]
+            + w_bandwidth  * bw_n[i]
+        )
 
 
 def create_devices(num_devices: int, seed: int,
