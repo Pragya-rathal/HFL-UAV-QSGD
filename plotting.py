@@ -26,6 +26,8 @@ COLORS = {
     "qsgd":         "#d62728",
     "topk_quorum":  "#9467bd",
     "qsgd_quorum":  "#8c564b",
+    "fedprox":      "#e377c2",
+    "topoco":       "#17becf",
 }
 MARKERS = {
     "standard_fl":  "o",
@@ -34,6 +36,8 @@ MARKERS = {
     "qsgd":         "D",
     "topk_quorum":  "P",
     "qsgd_quorum":  "*",
+    "fedprox":      "X",
+    "topoco":       "H",
 }
 LABELS = {
     "standard_fl":  "A: Std-FL",
@@ -42,6 +46,8 @@ LABELS = {
     "qsgd":         "D: QSGD",
     "topk_quorum":  "E: Top-K+Quorum",
     "qsgd_quorum":  "F: QSGD+Quorum",
+    "fedprox":      "G: FedProx",
+    "topoco":       "H: TopoCo (Ours)",
 }
 
 plt.rcParams.update({
@@ -58,7 +64,18 @@ plt.rcParams.update({
     "grid.alpha": 0.4,
 })
 
+# Canonical display order (6 classic + 2 new)
 METHODS = list(COLORS.keys())
+
+
+def _color(m: str) -> str:
+    return COLORS.get(m, "#7f7f7f")
+
+def _marker(m: str) -> str:
+    return MARKERS.get(m, "o")
+
+def _label(m: str) -> str:
+    return LABELS.get(m, m)
 
 
 def _save(fig, path: str):
@@ -81,9 +98,9 @@ def _method_mean_std(agg_dfs: Dict[str, pd.DataFrame], col: str):
 
 
 def _plot_with_band(ax, rounds, means, stds, method):
-    c = COLORS[method]
-    mk = MARKERS[method]
-    lb = LABELS[method]
+    c = _color(method)
+    mk = _marker(method)
+    lb = _label(method)
     step = max(1, len(rounds) // 10)
     ax.plot(rounds, means, color=c, marker=mk, markevery=step, label=lb)
     ax.fill_between(rounds, means - stds, means + stds, alpha=0.15, color=c)
@@ -135,13 +152,12 @@ def plot_latency_vs_rounds(agg_dfs, plots_dir):
 
 def plot_comm_vs_rounds(agg_dfs, plots_dir):
     fig, ax = plt.subplots(figsize=(6, 4))
-    # Cumulative comm
     for m, df in agg_dfs.items():
         col = "comm_total_mb_mean" if "comm_total_mb_mean" in df.columns else "comm_total_mb"
         cum = df[col].cumsum().values
         rounds = df["round"].values
-        ax.plot(rounds, cum, color=COLORS[m], marker=MARKERS[m],
-                markevery=max(1, len(rounds) // 10), label=LABELS[m])
+        ax.plot(rounds, cum, color=_color(m), marker=_marker(m),
+                markevery=max(1, len(rounds) // 10), label=_label(m))
     ax.set_xlabel("Communication Round")
     ax.set_ylabel("Cumulative Communication (MB)")
     ax.set_title("Cumulative Communication vs. Rounds")
@@ -159,7 +175,7 @@ def plot_accuracy_vs_latency(summary_df, plots_dir):
         ax.errorbar(
             row["avg_latency_mean"], row["best_acc_mean"],
             xerr=row["avg_latency_std"], yerr=row["best_acc_std"],
-            fmt=MARKERS[m], color=COLORS[m], label=LABELS[m],
+            fmt=_marker(m), color=_color(m), label=_label(m),
             markersize=8, capsize=4,
         )
     ax.set_xlabel("Average Round Latency (s)")
@@ -177,7 +193,7 @@ def plot_accuracy_vs_comm(summary_df, plots_dir):
         ax.errorbar(
             row["total_comm_mb_mean"], row["best_acc_mean"],
             xerr=row["total_comm_mb_std"], yerr=row["best_acc_std"],
-            fmt=MARKERS[m], color=COLORS[m], label=LABELS[m],
+            fmt=_marker(m), color=_color(m), label=_label(m),
             markersize=8, capsize=4,
         )
     ax.set_xlabel("Total Communication (MB)")
@@ -195,7 +211,7 @@ def plot_comm_vs_latency(summary_df, plots_dir):
         ax.errorbar(
             row["avg_latency_mean"], row["total_comm_mb_mean"],
             xerr=row["avg_latency_std"], yerr=row["total_comm_mb_std"],
-            fmt=MARKERS[m], color=COLORS[m], label=LABELS[m],
+            fmt=_marker(m), color=_color(m), label=_label(m),
             markersize=8, capsize=4,
         )
     ax.set_xlabel("Average Round Latency (s)")
@@ -213,8 +229,8 @@ def plot_active_devices(agg_dfs, plots_dir):
     for m, df in agg_dfs.items():
         col = "active_devices_mean" if "active_devices_mean" in df.columns else "active_devices"
         ax.plot(df["round"].values, df[col].values,
-                color=COLORS[m], marker=MARKERS[m],
-                markevery=max(1, len(df) // 10), label=LABELS[m])
+                color=_color(m), marker=_marker(m),
+                markevery=max(1, len(df) // 10), label=_label(m))
     ax.set_xlabel("Communication Round")
     ax.set_ylabel("Active Devices")
     ax.set_title("Active Devices per Round")
@@ -225,22 +241,20 @@ def plot_active_devices(agg_dfs, plots_dir):
 
 def plot_latency_distribution(agg_dfs, plots_dir):
     """Box plot of per-round latencies across all rounds."""
-    fig, ax = plt.subplots(figsize=(8, 4))
-    positions = np.arange(len(METHODS))
-    for i, m in enumerate(METHODS):
-        if m not in agg_dfs:
-            continue
+    # Collect only present methods in canonical order
+    present = [m for m in METHODS if m in agg_dfs]
+    if not present:
+        return
+    fig, ax = plt.subplots(figsize=(max(6, len(present) * 1.2), 4))
+    for i, m in enumerate(present):
         df = agg_dfs[m]
         col = "latency_round_mean" if "latency_round_mean" in df.columns else "latency_round"
         vals = df[col].values
-        bp = ax.boxplot(vals, positions=[i], widths=0.5,
-                        patch_artist=True,
-                        boxprops=dict(facecolor=COLORS[m], alpha=0.6))
-    ax.set_xticks(positions[:len([m for m in METHODS if m in agg_dfs])])
-    ax.set_xticklabels(
-        [LABELS[m] for m in METHODS if m in agg_dfs],
-        rotation=20, ha="right"
-    )
+        ax.boxplot(vals, positions=[i], widths=0.5,
+                   patch_artist=True,
+                   boxprops=dict(facecolor=_color(m), alpha=0.6))
+    ax.set_xticks(range(len(present)))
+    ax.set_xticklabels([_label(m) for m in present], rotation=20, ha="right")
     ax.set_ylabel("Round Latency (s)")
     ax.set_title("Latency Distribution Across Rounds")
     ax.grid(True, axis="y")
@@ -249,16 +263,12 @@ def plot_latency_distribution(agg_dfs, plots_dir):
 
 def plot_cluster_latency(cluster_lat_dfs: Dict[str, pd.DataFrame], plots_dir):
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-    for ax, (metric, ylabel) in zip(
-        axes,
-        [("cluster_latency", "Cluster Latency (s)")]
-    ):
-        for m, df in cluster_lat_dfs.items():
-            if df.empty:
-                continue
-            per_round = df.groupby("round")["cluster_latency"].mean()
-            ax.plot(per_round.index, per_round.values,
-                    color=COLORS[m], label=LABELS[m])
+    for m, df in cluster_lat_dfs.items():
+        if df.empty:
+            continue
+        per_round = df.groupby("round")["cluster_latency"].mean()
+        axes[0].plot(per_round.index, per_round.values,
+                     color=_color(m), label=_label(m))
     axes[0].set_xlabel("Round")
     axes[0].set_ylabel("Mean Cluster Latency (s)")
     axes[0].set_title("Mean Cluster-Level Latency per Round")
@@ -270,7 +280,7 @@ def plot_cluster_latency(cluster_lat_dfs: Dict[str, pd.DataFrame], plots_dir):
     for m, df in cluster_lat_dfs.items():
         if not df.empty:
             data.append(df["cluster_latency"].values)
-            labels.append(LABELS[m])
+            labels.append(_label(m))
     if data:
         axes[1].boxplot(data, labels=labels)
         axes[1].set_xticklabels(labels, rotation=20, ha="right")
@@ -294,10 +304,10 @@ def plot_efficiency_metrics(summary_df, plots_dir):
         (axes[0], acc_per_mb.values, "Communication Efficiency", "Accuracy / MB"),
         (axes[1], acc_per_sec.values, "Latency Efficiency", "Accuracy / s"),
     ]:
-        colors = [COLORS[m] for m in methods]
-        bars = ax.bar(range(len(methods)), vals, color=colors, edgecolor="black", linewidth=0.5)
+        colors = [_color(m) for m in methods]
+        ax.bar(range(len(methods)), vals, color=colors, edgecolor="black", linewidth=0.5)
         ax.set_xticks(range(len(methods)))
-        ax.set_xticklabels([LABELS[m] for m in methods], rotation=22, ha="right", fontsize=8)
+        ax.set_xticklabels([_label(m) for m in methods], rotation=22, ha="right", fontsize=8)
         ax.set_ylabel(ylabel)
         ax.set_title(title)
         ax.grid(True, axis="y")
@@ -310,21 +320,22 @@ def plot_compression_analysis(agg_dfs, plots_dir):
     """Compare compression ratio: comm_total_mb relative to standard_fl."""
     if "standard_fl" not in agg_dfs:
         return
-    baseline = agg_dfs["standard_fl"]["comm_total_mb_mean" if "comm_total_mb_mean" in agg_dfs["standard_fl"].columns else "comm_total_mb"].sum()
+    baseline_col = "comm_total_mb_mean" if "comm_total_mb_mean" in agg_dfs["standard_fl"].columns else "comm_total_mb"
+    baseline = agg_dfs["standard_fl"][baseline_col].sum()
 
     ratios = {}
     for m, df in agg_dfs.items():
         col = "comm_total_mb_mean" if "comm_total_mb_mean" in df.columns else "comm_total_mb"
         ratios[m] = df[col].sum() / (baseline + 1e-8)
 
-    fig, ax = plt.subplots(figsize=(7, 4))
+    fig, ax = plt.subplots(figsize=(max(7, len(ratios) * 0.9), 4))
     ms = list(ratios.keys())
     vals = [ratios[m] for m in ms]
-    colors = [COLORS[m] for m in ms]
+    colors = [_color(m) for m in ms]
     ax.bar(range(len(ms)), vals, color=colors, edgecolor="black", linewidth=0.5)
     ax.axhline(1.0, color="red", linestyle="--", linewidth=1, label="Std-FL baseline")
     ax.set_xticks(range(len(ms)))
-    ax.set_xticklabels([LABELS[m] for m in ms], rotation=22, ha="right")
+    ax.set_xticklabels([_label(m) for m in ms], rotation=22, ha="right")
     ax.set_ylabel("Communication Ratio (vs Std-FL)")
     ax.set_title("Compression Analysis – Relative Communication Cost")
     ax.legend()
@@ -333,10 +344,6 @@ def plot_compression_analysis(agg_dfs, plots_dir):
 
 
 def plot_quorum_sensitivity(quorum_results: Dict[float, Dict], plots_dir):
-    """
-    quorum_results: {fraction → {method → (acc, lat, comm)}}
-    Shows how accuracy and latency change with quorum fraction.
-    """
     if not quorum_results:
         return
     fracs = sorted(quorum_results.keys())
@@ -344,48 +351,31 @@ def plot_quorum_sensitivity(quorum_results: Dict[float, Dict], plots_dir):
     for m in ("topk_quorum", "qsgd_quorum"):
         accs = [quorum_results[f].get(m, (0, 0, 0))[0] for f in fracs]
         lats = [quorum_results[f].get(m, (0, 0, 0))[1] for f in fracs]
-        axes[0].plot(fracs, accs, marker="o", color=COLORS[m], label=LABELS[m])
-        axes[1].plot(fracs, lats, marker="s", color=COLORS[m], label=LABELS[m])
-    axes[0].set_xlabel("Quorum Fraction")
-    axes[0].set_ylabel("Best Accuracy")
-    axes[0].set_title("Quorum Sensitivity – Accuracy")
-    axes[0].legend()
-    axes[0].grid(True)
-    axes[1].set_xlabel("Quorum Fraction")
-    axes[1].set_ylabel("Avg Round Latency (s)")
-    axes[1].set_title("Quorum Sensitivity – Latency")
-    axes[1].legend()
-    axes[1].grid(True)
+        axes[0].plot(fracs, accs, marker="o", color=_color(m), label=_label(m))
+        axes[1].plot(fracs, lats, marker="s", color=_color(m), label=_label(m))
+    axes[0].set_xlabel("Quorum Fraction"); axes[0].set_ylabel("Best Accuracy")
+    axes[0].set_title("Quorum Sensitivity – Accuracy"); axes[0].legend(); axes[0].grid(True)
+    axes[1].set_xlabel("Quorum Fraction"); axes[1].set_ylabel("Avg Round Latency (s)")
+    axes[1].set_title("Quorum Sensitivity – Latency"); axes[1].legend(); axes[1].grid(True)
     fig.tight_layout()
     _save(fig, os.path.join(plots_dir, "quorum_sensitivity.pdf"))
 
 
 def plot_scaling_analysis(scaling_results: Dict[int, Dict], plots_dir):
-    """
-    scaling_results: {num_devices → {method → best_acc}}
-    """
     if not scaling_results:
         return
     ns = sorted(scaling_results.keys())
     fig, ax = plt.subplots(figsize=(6, 4))
     for m in METHODS:
         accs = [scaling_results[n].get(m, np.nan) for n in ns]
-        ax.plot(ns, accs, marker=MARKERS[m], color=COLORS[m], label=LABELS[m])
-    ax.set_xlabel("Number of Devices")
-    ax.set_ylabel("Best Accuracy")
-    ax.set_title("Scaling Analysis")
-    ax.legend(fontsize=7)
-    ax.grid(True)
+        ax.plot(ns, accs, marker=_marker(m), color=_color(m), label=_label(m))
+    ax.set_xlabel("Number of Devices"); ax.set_ylabel("Best Accuracy")
+    ax.set_title("Scaling Analysis"); ax.legend(fontsize=7); ax.grid(True)
     _save(fig, os.path.join(plots_dir, "scaling_analysis.pdf"))
 
 
 def plot_robustness(robustness_results: Dict, plots_dir):
-    """
-    robustness_results: {"alpha": {alpha → {method → acc}},
-                         "bandwidth": {bw_scale → {method → acc}}}
-    """
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-
     for ax, key, xlabel in [
         (axes[0], "alpha", "Dirichlet α (data heterogeneity)"),
         (axes[1], "bandwidth", "Bandwidth Scale Factor"),
@@ -396,13 +386,9 @@ def plot_robustness(robustness_results: Dict, plots_dir):
         xs = sorted(sweep.keys())
         for m in METHODS:
             ys = [sweep[x].get(m, np.nan) for x in xs]
-            ax.plot(xs, ys, marker=MARKERS[m], color=COLORS[m], label=LABELS[m])
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel("Best Accuracy")
-        ax.set_title(f"Robustness to {xlabel}")
-        ax.legend(fontsize=7)
-        ax.grid(True)
-
+            ax.plot(xs, ys, marker=_marker(m), color=_color(m), label=_label(m))
+        ax.set_xlabel(xlabel); ax.set_ylabel("Best Accuracy")
+        ax.set_title(f"Robustness to {xlabel}"); ax.legend(fontsize=7); ax.grid(True)
     fig.tight_layout()
     _save(fig, os.path.join(plots_dir, "robustness.pdf"))
 
@@ -411,30 +397,28 @@ def plot_convergence_metrics(summary_df, plots_dir):
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     methods = summary_df["method"].tolist()
 
-    # Convergence round
     axes[0].bar(
         range(len(methods)),
         summary_df["convergence_round_mean"].values,
         yerr=summary_df["convergence_round_std"].values,
-        color=[COLORS[m] for m in methods],
+        color=[_color(m) for m in methods],
         edgecolor="black", linewidth=0.5, capsize=4,
     )
     axes[0].set_xticks(range(len(methods)))
-    axes[0].set_xticklabels([LABELS[m] for m in methods], rotation=22, ha="right", fontsize=8)
+    axes[0].set_xticklabels([_label(m) for m in methods], rotation=22, ha="right", fontsize=8)
     axes[0].set_ylabel("Rounds to 95% Best Accuracy")
     axes[0].set_title("Convergence Speed")
     axes[0].grid(True, axis="y")
 
-    # Best accuracy
     axes[1].bar(
         range(len(methods)),
         summary_df["best_acc_mean"].values,
         yerr=summary_df["best_acc_std"].values,
-        color=[COLORS[m] for m in methods],
+        color=[_color(m) for m in methods],
         edgecolor="black", linewidth=0.5, capsize=4,
     )
     axes[1].set_xticks(range(len(methods)))
-    axes[1].set_xticklabels([LABELS[m] for m in methods], rotation=22, ha="right", fontsize=8)
+    axes[1].set_xticklabels([_label(m) for m in methods], rotation=22, ha="right", fontsize=8)
     axes[1].set_ylabel("Best Test Accuracy")
     axes[1].set_title("Final Accuracy Comparison")
     axes[1].grid(True, axis="y")
@@ -447,16 +431,14 @@ def plot_3d_tradeoff(summary_df, plots_dir):
     """3-D scatter: latency × communication × accuracy."""
     fig = plt.figure(figsize=(7, 5))
     ax = fig.add_subplot(111, projection="3d")
-
     for _, row in summary_df.iterrows():
         m = row["method"]
         ax.scatter(
             row["avg_latency_mean"],
             row["total_comm_mb_mean"],
             row["best_acc_mean"],
-            c=COLORS[m], marker=MARKERS[m], s=80, label=LABELS[m],
+            c=_color(m), marker=_marker(m), s=80, label=_label(m),
         )
-
     ax.set_xlabel("Avg Latency (s)", labelpad=8)
     ax.set_ylabel("Total Comm (MB)", labelpad=8)
     ax.set_zlabel("Best Accuracy", labelpad=8)
@@ -474,7 +456,6 @@ def plot_radar(summary_df, plots_dir):
 
     fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
 
-    # Normalise each axis to [0,1]
     acc_norm = (summary_df["best_acc_mean"] - summary_df["best_acc_mean"].min()) / \
                (summary_df["best_acc_mean"].max() - summary_df["best_acc_mean"].min() + 1e-8)
     lat_inv = 1 / (summary_df["avg_latency_mean"] + 1e-8)
@@ -488,8 +469,8 @@ def plot_radar(summary_df, plots_dir):
         m = row["method"]
         vals = [acc_norm.iloc[i], lat_norm.iloc[i], comm_norm.iloc[i], conv_norm.iloc[i]]
         vals += vals[:1]
-        ax.plot(angles, vals, color=COLORS[m], linewidth=1.5, label=LABELS[m])
-        ax.fill(angles, vals, color=COLORS[m], alpha=0.1)
+        ax.plot(angles, vals, color=_color(m), linewidth=1.5, label=_label(m))
+        ax.fill(angles, vals, color=_color(m), alpha=0.1)
 
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(categories)
