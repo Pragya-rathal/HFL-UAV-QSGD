@@ -19,14 +19,10 @@ This file is the focal contribution of the paper. It implements:
   │                                                                        │
   └────────────────────────────────────────────────────────────────────────┘
 
-This is what makes the framework an *adaptive optimization framework*, not a
-heuristic simulator.
-
 Wiring into the existing `federated.py`:
-  • Method 'topoco' (or whatever name) calls run_topoco_round() inside its
-    per-round loop instead of the static cluster/quorum/compress block.
+  • Method 'topoco' calls run_topoco_method() inside its per-round loop.
   • Existing methods (standard_fl, clustered_fl, topk_ef, qsgd) continue to
-    work unchanged → automatic ablation: "ours vs. previous static baselines".
+    work unchanged → automatic ablation.
 """
 
 from typing import Dict, List, Tuple
@@ -57,7 +53,7 @@ from clustering import reelect_heads
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Local training (unchanged from federated.py — kept here for self-containment)
+# Local training (self-contained copy — avoids circular import with federated.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _local_train(model, loader, epochs, lr, momentum, weight_decay):
@@ -174,14 +170,11 @@ def run_topoco_round(
 
             # Per-device adaptive compression (top-K with q_i)
             q_i = q_assign[dev_id]
-            # Use no error-feedback residual here for simplicity in the loop;
-            # for the paper, plug residuals[dev_id] in like in federated.py
             zero_res = torch.zeros_like(raw_update)
             vals, idxs, _ = topk_compress(raw_update, zero_res, q_i)
             delta = topk_decompress(vals, idxs, n_params)
             communicated = global_flat + delta
 
-            # Bookkeeping
             cluster_comm_mb += predict_comm_cost_mb(n_params, q_i, cfg.model_bits)
             update_norms[dev_id] = float(raw_update.norm().pow(2).item())
             local_flats.append(communicated)
@@ -196,20 +189,25 @@ def run_topoco_round(
         set_flat_params(global_model, new_flat)
 
     # ── 7. Observed signals ─────────────────────────────────────────────────
-    # Latency (worst cluster, same model as before)
+    # Per-device latency and cluster-level latency
     cluster_lats = []
-    all_indiv = []
+    all_indiv_lats = []
     for h, mids in active_per_cluster.items():
-        if not mids: continue
+        if not mids:
+            continue
         per_dev = []
         for i in mids:
             q_i = q_assign[i]
             comm_mb = predict_comm_cost_mb(n_params, q_i, cfg.model_bits)
             per_dev.append(predict_latency_s(comm_mb, devices[i].bandwidth,
                                              devices[i].compute_power, cfg.base_compute_time))
-        all_indiv.extend(per_dev)
+        all_indiv_lats.extend(per_dev)
         cluster_lats.append(max(per_dev) + cfg.agg_head_time)
+
     t_round = (max(cluster_lats) + cfg.uav_comm_base * len(head_ids)) if cluster_lats else 0.0
+    t_mean  = float(np.mean(all_indiv_lats)) if all_indiv_lats else 0.0
+    t_p75   = float(np.percentile(all_indiv_lats, 75)) if all_indiv_lats else 0.0
+
     observed_C = cluster_comm_mb + cluster_uav_mb
     observed_L = t_round
     observed_D = float(np.mean(list(update_norms.values()))) if update_norms else 0.0
@@ -234,14 +232,23 @@ def run_topoco_round(
 
     sched_diag = schedule_diagnostics(active_per_cluster, q_assign)
 
+    # History row — schema-compatible with all other methods (superset):
+    # base fields present in every method + topoco-specific extensions.
     row = {
         "round": round_idx + 1,
         "accuracy": float(acc),
         "loss": float(np.mean(round_losses)) if round_losses else 0.0,
         "eval_loss": float(eval_loss),
-        "latency_round": float(observed_L),
-        "comm_total_mb": float(observed_C),
-        "active_devices": int(total_active),
+        # Latency — full schema (latency_round, latency_mean, latency_p75)
+        "latency_round": float(t_round),
+        "latency_mean":  float(t_mean),
+        "latency_p75":   float(t_p75),
+        # Communication — full schema
+        "comm_device_to_head_mb": float(cluster_comm_mb),
+        "comm_head_to_uav_mb":    float(cluster_uav_mb),
+        "comm_total_mb":          float(observed_C),
+        "active_devices":         int(total_active),
+        "cluster_times":          cluster_lats,
         # Topology
         "avg_local_cc": metrics.avg_local_cc,
         "apl": metrics.apl if metrics.apl is not None else float("nan"),
@@ -265,11 +272,18 @@ def run_topoco_method(global_model_init, train_loaders, test_loader,
     """
     Full TopoCo training run. Returns a list[dict] history compatible with
     metrics.history_to_df.
-    """
-    import numpy as np
-    from model import clone_model
 
+    The rng seed is derived from cfg.seeds: if the caller (run_single) has
+    already called set_seed(seed) via torch/numpy, we derive the rng from
+    the *first element of cfg.seeds that matches the numpy global state*.
+    To guarantee full reproducibility across seeds we accept a seed kwarg
+    forwarded through cfg._current_seed (set by run_single before dispatch).
+    Falls back to cfg.seeds[0] if not present.
+    """
     global_model = clone_model(global_model_init)
+
+    # Use the per-run seed stored by run_single, falling back to seeds[0].
+    seed = getattr(cfg, "_current_seed", cfg.seeds[0] if cfg.seeds else 42)
 
     state = LagrangianState(
         lambda_C=cfg.lambda_C_init, lambda_L=cfg.lambda_L_init, lambda_D=cfg.lambda_D_init,
@@ -281,7 +295,7 @@ def run_topoco_method(global_model_init, train_loaders, test_loader,
         q_min=cfg.q_min, q_max=cfg.q_max,
         rho_max=cfg.rho_max, floor_m=cfg.floor_m,
     )
-    rng = np.random.RandomState(cfg.seeds[0] if cfg.seeds else 42)
+    rng = np.random.RandomState(seed)
     proxy = {d.device_id: 1.0 for d in devices}
 
     history = []
