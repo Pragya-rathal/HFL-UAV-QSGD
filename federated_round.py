@@ -141,8 +141,12 @@ def run_topoco_round(
     if cfg.adaptive_participation_enabled:
         active_per_cluster = adaptive_participation(clusters, scores, state, sched_cfg)
     else:
+        dev_map = {d.device_id: d for d in devices}
         active_per_cluster = {
-            h: [m for m in members if devices[m].is_active][:int(cfg.rho_max * len(members))]
+            h: [m for m in members if dev_map[m].is_active][
+                : max(sched_cfg.floor_m,
+                      int(cfg.rho_max * len(members)))
+            ]
             for h, members in clusters.items()
         }
 
