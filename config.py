@@ -111,7 +111,7 @@ class Config:
             self.r_comm = 150.0
             self.B_target_mb = 20.0
         else:  # full
-            self.dataset = "CIFAR10"
+            self.dataset = "CIFAR-10"
             self.num_devices = 60
             self.num_clusters = 10
             self.num_rounds = 60
