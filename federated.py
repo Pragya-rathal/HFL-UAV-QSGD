@@ -180,7 +180,10 @@ def run_method(method, global_model_init, train_loaders, test_loader,
             active_per_cluster = {h: list(mids) for h, mids in clusters.items()}
 
         if method == "standard_fl":
-            active_per_cluster = {0: list(range(len(devices)))}
+            # Treat all devices as one flat cluster; use the first head_id as
+            # the dict key so the latency model's cluster_times list has length 1.
+            sentinel = head_ids[0] if head_ids else 0
+            active_per_cluster = {sentinel: list(range(len(devices)))}
 
         total_active = sum(len(v) for v in active_per_cluster.values())
 
