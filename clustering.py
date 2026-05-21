@@ -57,28 +57,26 @@ def form_clusters(
     distance in a synthetic 2-D layout seeded from device distances).
     Returns {head_id: [member_device_ids]}.
     """
-    n = len(devices)
-    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
-    positions = np.stack(
-        [np.array([d.distance * np.cos(angles[i]),
-                   d.distance * np.sin(angles[i])]) for i, d in enumerate(devices)]
-    )  # shape (n, 2)
+    # Use the actual 2-D positions stored on each device (set by create_devices).
+    # Build a {device_id → np.array([x, y])} map so lookups are O(1) and
+    # correct regardless of whether device_id happens to equal the list index.
+    pos_map = {d.device_id: np.asarray(d.position, dtype=float) for d in devices}
 
-    head_positions = positions[head_ids]   # (K, 2)
+    head_positions = np.stack([pos_map[h] for h in head_ids])  # (K, 2)
 
     clusters: Dict[int, List[int]] = {h: [h] for h in head_ids}
     cluster_counts = {h: 1 for h in head_ids}
 
-    non_heads = [i for i in range(n) if i not in head_ids]
+    non_heads = [d.device_id for d in devices if d.device_id not in head_ids]
     dists_to_best = [
-        np.min(np.linalg.norm(head_positions - positions[i], axis=1))
-        for i in non_heads
+        np.min(np.linalg.norm(head_positions - pos_map[dev_id], axis=1))
+        for dev_id in non_heads
     ]
     order = np.argsort(dists_to_best)
 
     for idx in order:
         dev_id = non_heads[idx]
-        dists = np.linalg.norm(head_positions - positions[dev_id], axis=1)
+        dists = np.linalg.norm(head_positions - pos_map[dev_id], axis=1)
         for head_rank in np.argsort(dists):
             h = head_ids[head_rank]
             if cluster_counts[h] < max_cluster_size:
@@ -86,13 +84,18 @@ def form_clusters(
                 cluster_counts[h] += 1
                 break
         else:
-            h = head_ids[int(np.argmin(dists))]
+            h = head_ids[int(np.argmin(
+                np.linalg.norm(head_positions - pos_map[dev_id], axis=1)
+            ))]
             clusters[h].append(dev_id)
             cluster_counts[h] += 1
 
+    # Build a device_id → device lookup so we can set cluster_id without
+    # assuming device_id equals the list index.
+    dev_map = {d.device_id: d for d in devices}
     for h, members in clusters.items():
-        for dev_id in members:
-            devices[dev_id].cluster_id = h
+        for did in members:
+            dev_map[did].cluster_id = h
 
     return clusters
 
