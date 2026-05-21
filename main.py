@@ -108,6 +108,11 @@ def run_single(method: str, seed: int, cfg: Config):
     global_model_init = get_model(cfg.dataset, cfg.device)
     print(f"  model params: {count_parameters(global_model_init):,}")
 
+    # Store the current seed on cfg so that run_topoco_method (and any future
+    # method wrappers) can derive a correctly seeded internal RNG, ensuring
+    # full reproducibility across seeds.
+    cfg._current_seed = seed
+
     history = run_method(method, global_model_init, train_loaders, test_loader,
                          devices, clusters, head_ids, cfg)
 
