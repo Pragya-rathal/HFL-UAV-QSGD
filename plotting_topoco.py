@@ -158,13 +158,80 @@ def plot_adaptivity_ablation(ablation: Dict[str, float], save_path: str,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. Top-level driver
+# 6. Stress-sweep: accuracy under stress + adaptivity gap
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_stress_sweep(stress_results: Dict[float, Dict[str, tuple]], save_path: str):
+    """
+    Two-panel figure.
+
+    LEFT  — line plot, x = dropout probability, y = best accuracy, one line
+             per method.  Tells the reader how each method degrades as the
+             network gets less reliable.
+
+    RIGHT — bar plot, x = dropout level, y = Acc(topoco_full) − Acc(topoco_static).
+             The gap widening to the right is the central piece of evidence
+             that the adaptive primal-dual mechanism (and not just clustering
+             or compression) is what's earning the contribution.
+    """
+    _style()
+    if not stress_results:
+        return
+
+    dropouts = sorted(stress_results.keys())
+    methods  = ["clustered_fl", "hierfavg", "topoco_static", "topoco_full"]
+    labels   = {
+        "clustered_fl":  "Clustered FL",
+        "hierfavg":      "HierFAVG",
+        "topoco_static": "TopoCo (static)",
+        "topoco_full":   "TopoCo (full, ours)",
+    }
+    colors  = ["C0", "C1", "C2", "C3"]
+    markers = ["o", "s", "^", "*"]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.2))
+
+    for method, color, marker in zip(methods, colors, markers):
+        accs = [stress_results[d].get(method, (np.nan, np.nan, np.nan))[0] for d in dropouts]
+        ax1.plot(dropouts, accs, "-" + marker, color=color, label=labels[method],
+                 markersize=8 if marker == "*" else 6,
+                 linewidth=2.0 if method == "topoco_full" else 1.4)
+    ax1.set_xlabel("Transient dropout probability  $p_{\\rm drop}$")
+    ax1.set_ylabel("Best test accuracy")
+    ax1.set_title("Accuracy under network stress")
+    ax1.legend(fontsize=9)
+
+    gap = []
+    for d in dropouts:
+        full = stress_results[d].get("topoco_full",   (np.nan, 0, 0))[0]
+        stat = stress_results[d].get("topoco_static", (np.nan, 0, 0))[0]
+        gap.append(full - stat)
+    bars = ax2.bar(range(len(dropouts)), gap, color="C3",
+                   edgecolor="black", linewidth=0.8)
+    ax2.set_xticks(range(len(dropouts)))
+    ax2.set_xticklabels([f"{d:.2f}" for d in dropouts])
+    ax2.set_xlabel("Dropout probability  $p_{\\rm drop}$")
+    ax2.set_ylabel(r"$\Delta$Acc  (full − static)")
+    ax2.set_title("Adaptivity gap widens under stress")
+    ax2.axhline(0, color="black", linewidth=0.5)
+    for b, g in zip(bars, gap):
+        ax2.text(b.get_x() + b.get_width() / 2, g + 0.003, f"{g:+.3f}",
+                 ha="center", va="bottom", fontsize=9)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Top-level driver
 # ─────────────────────────────────────────────────────────────────────────────
 
 def generate_topoco_plots(per_method_dfs: Dict[str, List[pd.DataFrame]],
                           summary_df: pd.DataFrame,
                           ablation_results: Dict[str, float],
-                          plots_dir: str) -> int:
+                          plots_dir: str,
+                          stress_results: Dict[float, Dict[str, tuple]] = None) -> int:
     """
     `per_method_dfs[method]` is the list of per-seed DataFrames (as built by
     main.save_results). Returns the number of figures emitted.
@@ -180,4 +247,6 @@ def generate_topoco_plots(per_method_dfs: Dict[str, List[pd.DataFrame]],
         plot_pareto_comm_acc(summary_df,       os.path.join(plots_dir, "pareto_comm_acc.png"));        n += 1
     if ablation_results:
         plot_adaptivity_ablation(ablation_results, os.path.join(plots_dir, "adaptivity_ablation.png"));n += 1
+    if stress_results:
+        plot_stress_sweep(stress_results,      os.path.join(plots_dir, "stress_sweep.png"));           n += 1
     return n

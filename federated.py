@@ -142,6 +142,10 @@ def run_method(method, global_model_init, train_loaders, test_loader,
         from baselines import run_fedprox_method
         return run_fedprox_method(global_model_init, train_loaders, test_loader,
                                   devices, clusters, head_ids, cfg)
+    if method == "hierfavg":
+        from baselines import run_hierfavg_method
+        return run_hierfavg_method(global_model_init, train_loaders, test_loader,
+                                   devices, clusters, head_ids, cfg)
     # ─── End new dispatch — original 6-method code follows unchanged ────────
 
     n_params  = count_parameters(global_model_init)
@@ -180,10 +184,7 @@ def run_method(method, global_model_init, train_loaders, test_loader,
             active_per_cluster = {h: list(mids) for h, mids in clusters.items()}
 
         if method == "standard_fl":
-            # Treat all devices as one flat cluster; use the first head_id as
-            # the dict key so the latency model's cluster_times list has length 1.
-            sentinel = head_ids[0] if head_ids else 0
-            active_per_cluster = {sentinel: list(range(len(devices)))}
+            active_per_cluster = {0: list(range(len(devices)))}
 
         total_active = sum(len(v) for v in active_per_cluster.values())
 

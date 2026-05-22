@@ -55,7 +55,7 @@ CLASSIC_METHODS = [
     "standard_fl", "clustered_fl", "topk_ef", "qsgd",
     "topk_quorum", "qsgd_quorum",
 ]
-MODERN_BASELINES = ["fedprox"]
+MODERN_BASELINES = ["fedprox", "hierfavg"]
 OURS = ["topoco"]
 EXPERIMENT_METHODS = CLASSIC_METHODS + MODERN_BASELINES + OURS
 
@@ -108,11 +108,6 @@ def run_single(method: str, seed: int, cfg: Config):
     global_model_init = get_model(cfg.dataset, cfg.device)
     print(f"  model params: {count_parameters(global_model_init):,}")
 
-    # Store the current seed on cfg so that run_topoco_method (and any future
-    # method wrappers) can derive a correctly seeded internal RNG, ensuring
-    # full reproducibility across seeds.
-    cfg._current_seed = seed
-
     history = run_method(method, global_model_init, train_loaders, test_loader,
                          devices, clusters, head_ids, cfg)
 
@@ -160,6 +155,61 @@ def run_adaptivity_ablation(cfg: Config) -> Dict[str, float]:
         c2.seeds = [seed]
         hist = run_single("topoco", seed, c2)
         out[label] = max(h["accuracy"] for h in hist)
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stress sweep — adaptivity-vs-network-stress
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_stress_sweep(cfg: Config) -> Dict[float, Dict[str, tuple]]:
+    """
+    Sweep transient-dropout probability and compare adaptivity.
+
+    For each stress level, train four variants:
+      • clustered_fl     — non-adaptive baseline (no compression, no selection)
+      • hierfavg         — modern HFL baseline (κ_2 intra-cluster rounds)
+      • topoco_static    — our framework with adaptivity DISABLED (control)
+      • topoco_full      — our framework with adaptivity ENABLED (proposed)
+
+    The narrative the plot supports:
+      * topoco_full and topoco_static should be close at low stress
+        (adaptation has nothing to adapt to)
+      * the gap should widen with stress, showing that the adaptive primal-
+        dual mechanism is what's earning its place in the algorithm.
+
+    Returns:
+      {dropout_prob: {variant_label: (best_acc, total_comm_mb, avg_lat_s)}}
+    """
+    seed = cfg.seeds[0]
+    stress_levels = [0.02, 0.10, 0.20]
+    out: Dict[float, Dict[str, tuple]] = {}
+
+    variants = [
+        ("clustered_fl",   "clustered_fl", {}),
+        ("hierfavg",       "hierfavg",     {}),
+        ("topoco_static",  "topoco",       {"adaptive_compression_enabled":  False,
+                                            "adaptive_participation_enabled": False}),
+        ("topoco_full",    "topoco",       {}),
+    ]
+
+    for dropout in stress_levels:
+        print(f"\n{'#'*64}\n[Stress sweep]  p_drop = {dropout:.2f}\n{'#'*64}")
+        out[dropout] = {}
+        for label, method, overrides in variants:
+            c = copy.copy(cfg)
+            c.dropout_prob = dropout
+            c.seeds = [seed]
+            for k, v in overrides.items():
+                setattr(c, k, v)
+            hist = run_single(method, seed, c)
+            best_acc   = max(h["accuracy"] for h in hist)
+            total_comm = float(sum(h["comm_total_mb"] for h in hist))
+            avg_lat    = float(np.mean([h["latency_round"] for h in hist]))
+            out[dropout][label] = (best_acc, total_comm, avg_lat)
+            print(f"  → {label:18s}  acc={best_acc:.4f}  "
+                  f"comm={total_comm:8.1f} MB  lat={avg_lat:.3f} s")
+
     return out
 
 
@@ -221,12 +271,29 @@ def run(cfg: Config):
     for k, v in ablation_results.items():
         print(f"    {k:40s}  best_acc = {v:.4f}")
 
+    # ── Stress sweep (opt-in; the "adaptivity gap widens" story) ────────────
+    stress_results = None
+    if cfg.run_stress_sweep:
+        t = time.time()
+        print("\n[INFO] Running stress sweep…")
+        stress_results = run_stress_sweep(cfg)
+        print(f"[INFO] Stress sweep: {(time.time()-t)/60:.1f} min.")
+        # Persist
+        rows = []
+        for d, by_variant in stress_results.items():
+            for variant, (acc, comm, lat) in by_variant.items():
+                rows.append({"dropout": d, "variant": variant,
+                             "best_acc": acc, "total_comm_mb": comm, "avg_lat_s": lat})
+        pd.DataFrame(rows).to_csv(
+            os.path.join(summaries_dir, f"{cfg.mode}_stress_sweep.csv"), index=False)
+
     # ── Plots ───────────────────────────────────────────────────────────────
     cluster_lat_dfs = {m: get_cluster_latency_stats(s) for m, s in results.items()}
     print("\n[INFO] Generating base plots…")
     n_base = generate_all_plots(agg_dfs, summary_df, cluster_lat_dfs, plots_dir)
     print("[INFO] Generating TopoCo plots…")
-    n_topoco = generate_topoco_plots(all_dfs, summary_df, ablation_results, plots_dir)
+    n_topoco = generate_topoco_plots(all_dfs, summary_df, ablation_results,
+                                      plots_dir, stress_results=stress_results)
     print(f"[INFO] Plots written: {n_base} base + {n_topoco} TopoCo")
 
     summary_df.to_csv(os.path.join(summaries_dir, "aggregate.csv"), index=False)
@@ -241,13 +308,14 @@ def run(cfg: Config):
 
 
 def run_from_notebook(mode="toy", iid=False, alpha=0.5, device=None,
-                      results_dir="results", seeds=None):
+                      results_dir="results", seeds=None, run_stress_sweep=False):
     cfg = Config()
     cfg.mode = mode; cfg.iid = iid; cfg.alpha = alpha
     cfg.results_dir = results_dir
     if device is not None: cfg.device = device
     cfg.apply_mode()
     if seeds is not None: cfg.seeds = seeds
+    cfg.run_stress_sweep = run_stress_sweep
     return run(cfg)
 
 

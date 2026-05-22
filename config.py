@@ -63,6 +63,15 @@ class Config:
     #     methods that survive as baselines. New TopoCo path ignores this. ──
     quorum_fraction: float = 0.6
 
+    # ─── HierFAVG baseline ──────────────────────────────────────────────────
+    # κ_2 in Liu et al. (ICC 2020): number of intra-cluster aggregations per
+    # global round. =1 collapses to clustered_fl; the paper uses 3 in our
+    # experiments.
+    edge_rounds: int = 3
+
+    # ─── Stress-sweep ablation (opt-in; ~12 extra runs) ─────────────────────
+    run_stress_sweep: bool = False
+
     # ─── Schedule (adaptive primal policies) ────────────────────────────────
     q_min:    float = 0.02
     q_max:    float = 0.50
@@ -111,7 +120,7 @@ class Config:
             self.r_comm = 150.0
             self.B_target_mb = 20.0
         else:  # full
-            self.dataset = "CIFAR-10"
+            self.dataset = "CIFAR10"
             self.num_devices = 60
             self.num_clusters = 10
             self.num_rounds = 60
@@ -137,6 +146,8 @@ def parse_args() -> Config:
                         help="disable adaptive participation (use rho_max for all)")
     parser.add_argument("--mobility", type=float, default=None,
                         help="metres of position jitter per round")
+    parser.add_argument("--stress-sweep", dest="run_stress_sweep", action="store_true",
+                        help="run the dropout-stress sensitivity sweep (~12 extra trainings)")
 
     args = parser.parse_args()
     cfg = Config()
@@ -147,4 +158,5 @@ def parse_args() -> Config:
     if args.static_compression:   cfg.adaptive_compression_enabled = False
     if args.static_participation: cfg.adaptive_participation_enabled = False
     if args.mobility is not None: cfg.mobility_step = float(args.mobility)
+    if args.run_stress_sweep:     cfg.run_stress_sweep = True
     return cfg

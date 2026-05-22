@@ -12,10 +12,11 @@ METHOD_LABELS = {
     "clustered_fl": "B: Clustered-FL",
     "topk_ef":      "C: Top-K+EF",
     "qsgd":         "D: QSGD",
-    "topk_quorum":  "E: Top-K+Quorum (Prop.)",
-    "qsgd_quorum":  "F: QSGD+Quorum (Prop.)",
+    "topk_quorum":  "E: Top-K+Quorum",
+    "qsgd_quorum":  "F: QSGD+Quorum",
     "fedprox":      "G: FedProx",
-    "topoco":       "H: TopoCo (Ours)",
+    "hierfavg":     "H: HierFAVG",
+    "topoco":       "T: TopoCo (Prop.)",
 }
 
 

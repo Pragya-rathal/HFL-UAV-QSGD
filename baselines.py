@@ -134,6 +134,104 @@ def run_fedprox_method(global_model_init, train_loaders, test_loader,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HierFAVG  (Liu et al., ICC 2020)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_hierfavg_method(global_model_init, train_loaders, test_loader,
+                        devices, clusters, head_ids, cfg) -> List[Dict]:
+    """
+    HierFAVG: two-level FedAvg.
+
+    Each global round contains  κ_2 = cfg.edge_rounds  intra-cluster
+    aggregations. Between successive intra-cluster aggregations, the edge
+    (cluster-head) model is broadcast back to its members, who then continue
+    training from that aggregated point. After all κ_2 edge rounds, cluster-
+    head models are averaged at the UAV.
+
+    This is the canonical hierarchical-FL aggregator and the most direct
+    prior-art comparator for our framework. With κ_2 = 1 the algorithm
+    degenerates to our `clustered_fl` baseline; the original paper uses 3.
+
+    Compression: none (matches the canonical paper). Participation: full.
+    """
+    from federated import evaluate, fedavg, local_train as _local_train
+
+    n_params = count_parameters(global_model_init)
+    full_size = full_update_size_mb(n_params, cfg.model_bits)
+    edge_rounds = max(1, int(getattr(cfg, "edge_rounds", 3)))
+
+    global_model = clone_model(global_model_init)
+    history: List[Dict] = []
+
+    for rnd in range(cfg.num_rounds):
+        global_flat = get_flat_params(global_model).clone()
+
+        # κ_2 intra-cluster aggregation cycles ──────────────────────────────
+        edge_flats = {h: global_flat.clone() for h in clusters}
+        round_losses: List[float] = []
+        cluster_comm_mb = 0.0      # device → head traffic, summed over κ_2 rounds
+
+        for _ in range(edge_rounds):
+            new_edge_flats = {}
+            for head_id, member_ids in clusters.items():
+                edge_flat = edge_flats[head_id]
+                local_flats = []
+                for dev_id in member_ids:
+                    local_model = clone_model(global_model)
+                    set_flat_params(local_model, edge_flat)   # start from edge model
+                    local_model, loss_i = _local_train(
+                        local_model, train_loaders[dev_id],
+                        cfg.local_epochs, cfg.lr, cfg.momentum, cfg.weight_decay,
+                    )
+                    round_losses.append(loss_i)
+                    local_flats.append(get_flat_params(local_model))
+                    cluster_comm_mb += full_size               # one device → head upload
+                if local_flats:
+                    new_edge_flats[head_id] = fedavg(edge_flat, local_flats)
+                else:
+                    new_edge_flats[head_id] = edge_flat
+            edge_flats = new_edge_flats
+
+        # Global aggregation (cluster heads → UAV), once per global round ───
+        cluster_uav_mb = len(edge_flats) * full_size
+        new_global_flat = fedavg(global_flat, list(edge_flats.values()))
+        set_flat_params(global_model, new_global_flat)
+
+        # Latency: κ_2 × (intra-cluster compute + intra-cluster comm) + UAV gather
+        intra_times = []
+        all_indiv = []
+        for _, mids in clusters.items():
+            dt = [devices[i].total_time(cfg.base_compute_time, full_size) for i in mids]
+            all_indiv.extend(dt)
+            intra_times.append(max(dt) + cfg.agg_head_time)
+        t_round = edge_rounds * max(intra_times) + cfg.uav_comm_base * len(head_ids)
+        t_mean = float(np.mean(all_indiv))
+        t_p75  = float(np.percentile(all_indiv, 75))
+
+        acc, eval_loss = evaluate(global_model, test_loader)
+        history.append({
+            "round": rnd + 1,
+            "accuracy": float(acc),
+            "loss": float(np.mean(round_losses)) if round_losses else 0.0,
+            "eval_loss": float(eval_loss),
+            "latency_round": float(t_round),
+            "latency_mean":  float(t_mean),
+            "latency_p75":   float(t_p75),
+            "comm_device_to_head_mb": float(cluster_comm_mb),
+            "comm_head_to_uav_mb":    float(cluster_uav_mb),
+            "comm_total_mb":          float(cluster_comm_mb + cluster_uav_mb),
+            "active_devices":         sum(len(v) for v in clusters.values()),
+            "cluster_times":          [edge_rounds * t for t in intra_times],
+            "edge_rounds":            edge_rounds,
+        })
+        print(f"  [hierfavg]      R{rnd+1:3d}/{cfg.num_rounds} "
+              f"Acc={acc:.4f} Loss={eval_loss:.4f} "
+              f"Lat={t_round:.3f}s Comm={cluster_comm_mb+cluster_uav_mb:.2f}MB "
+              f"κ₂={edge_rounds}", flush=True)
+    return history
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SCAFFOLD note (for the paper appendix / discussion)
 # ─────────────────────────────────────────────────────────────────────────────
 
